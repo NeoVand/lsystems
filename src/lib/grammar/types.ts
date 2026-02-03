@@ -2,6 +2,8 @@
  * L-system grammar type definitions
  */
 
+import type { Expression } from './expression';
+
 /** A symbol in the L-system alphabet */
 export interface Symbol {
 	id: string; // Single character identifier
@@ -18,7 +20,7 @@ export interface D0LRule {
 export interface ParametricRule {
 	predecessor: string;
 	params: string[]; // Parameter names (e.g., ['l', 'w'])
-	condition?: Expression; // Guard condition
+	condition?: Expression; // Guard condition (optional)
 	successor: ParametricSuccessor[];
 	probability?: number; // For stochastic rules (1.0 = deterministic)
 }
@@ -26,24 +28,14 @@ export interface ParametricRule {
 /** Successor symbol with parameter expressions */
 export interface ParametricSuccessor {
 	symbol: string;
-	paramExpressions: Expression[]; // Expressions for each parameter
+	params: Expression[]; // Expressions for each parameter
 }
-
-/** Expression AST node types */
-export type Expression =
-	| { type: 'literal'; value: number }
-	| { type: 'param'; name: string }
-	| { type: 'binary'; op: BinaryOp; left: Expression; right: Expression }
-	| { type: 'unary'; op: UnaryOp; operand: Expression };
-
-export type BinaryOp = '+' | '-' | '*' | '/' | '>' | '<' | '>=' | '<=' | '==' | '!=' | '&&' | '||';
-export type UnaryOp = '-' | '!';
 
 /** Complete L-system grammar */
 export interface Grammar {
 	axiom: Symbol[];
 	rules: D0LRule[];
-	// Future: parametricRules, contextRules
+	parametricRules: ParametricRule[];
 }
 
 /** Parsed rule result from parser */

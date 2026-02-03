@@ -239,6 +239,111 @@ export const boardPattern: Preset = {
 };
 
 /**
+ * Parametric Tree - branches taper with depth
+ */
+export const parametricTree: Preset = {
+	name: 'Parametric Tree',
+	description: 'Tree with tapering branches using parameters',
+	grammar: {
+		axiom: [{ id: 'A', params: [10] }],
+		rules: [],
+		parametricRules: [
+			{
+				predecessor: 'A',
+				params: ['l'],
+				condition: { type: 'binary', op: '>', left: { type: 'variable', name: 'l' }, right: { type: 'number', value: 1 } },
+				successor: [
+					{ symbol: 'F', params: [{ type: 'variable', name: 'l' }] },
+					{ symbol: '[', params: [] },
+					{ symbol: '+', params: [{ type: 'number', value: 25 }] },
+					{ symbol: 'A', params: [{ type: 'binary', op: '*', left: { type: 'variable', name: 'l' }, right: { type: 'number', value: 0.7 } }] },
+					{ symbol: ']', params: [] },
+					{ symbol: '[', params: [] },
+					{ symbol: '-', params: [{ type: 'number', value: 25 }] },
+					{ symbol: 'A', params: [{ type: 'binary', op: '*', left: { type: 'variable', name: 'l' }, right: { type: 'number', value: 0.7 } }] },
+					{ symbol: ']', params: [] },
+				],
+			},
+			{
+				predecessor: 'A',
+				params: ['l'],
+				successor: [
+					{ symbol: 'F', params: [{ type: 'variable', name: 'l' }] },
+				],
+			},
+		],
+	},
+	angle: 25,
+	iterations: 8,
+};
+
+/**
+ * Parametric Bush - asymmetric branching
+ */
+export const parametricBush: Preset = {
+	name: 'Parametric Bush',
+	description: 'Bush with asymmetric parametric branching',
+	grammar: {
+		axiom: [{ id: 'F', params: [8] }],
+		rules: [],
+		parametricRules: [
+			{
+				predecessor: 'F',
+				params: ['s'],
+				condition: { type: 'binary', op: '>=', left: { type: 'variable', name: 's' }, right: { type: 'number', value: 1 } },
+				successor: [
+					{ symbol: 'F', params: [{ type: 'binary', op: '*', left: { type: 'variable', name: 's' }, right: { type: 'number', value: 0.6 } }] },
+					{ symbol: '+', params: [] },
+					{ symbol: '[', params: [] },
+					{ symbol: '+', params: [] },
+					{ symbol: 'F', params: [{ type: 'binary', op: '*', left: { type: 'variable', name: 's' }, right: { type: 'number', value: 0.5 } }] },
+					{ symbol: ']', params: [] },
+					{ symbol: '-', params: [] },
+					{ symbol: '-', params: [] },
+					{ symbol: 'F', params: [{ type: 'binary', op: '*', left: { type: 'variable', name: 's' }, right: { type: 'number', value: 0.8 } }] },
+					{ symbol: '[', params: [] },
+					{ symbol: '-', params: [] },
+					{ symbol: 'F', params: [{ type: 'binary', op: '*', left: { type: 'variable', name: 's' }, right: { type: 'number', value: 0.4 } }] },
+					{ symbol: ']', params: [] },
+					{ symbol: '+', params: [] },
+					{ symbol: 'F', params: [{ type: 'binary', op: '*', left: { type: 'variable', name: 's' }, right: { type: 'number', value: 0.5 } }] },
+				],
+			},
+		],
+	},
+	angle: 22,
+	iterations: 5,
+};
+
+/**
+ * Spiral with decreasing step
+ */
+export const parametricSpiral: Preset = {
+	name: 'Parametric Spiral',
+	description: 'Spiral with decreasing step size',
+	grammar: {
+		axiom: [{ id: 'A', params: [15] }],
+		rules: [],
+		parametricRules: [
+			{
+				predecessor: 'A',
+				params: ['s'],
+				condition: { type: 'binary', op: '>', left: { type: 'variable', name: 's' }, right: { type: 'number', value: 0.3 } },
+				successor: [
+					{ symbol: 'F', params: [{ type: 'variable', name: 's' }] },
+					{ symbol: '+', params: [] },
+					{ symbol: 'A', params: [
+						{ type: 'binary', op: '*', left: { type: 'variable', name: 's' }, right: { type: 'number', value: 0.97 } },
+					]},
+				],
+			},
+		],
+	},
+	angle: 15,
+	iterations: 100,
+};
+
+/**
  * All presets as array
  */
 export const allPresets: Preset[] = [
@@ -258,6 +363,9 @@ export const allPresets: Preset[] = [
 	levyCurve,
 	segment32,
 	boardPattern,
+	parametricTree,
+	parametricBush,
+	parametricSpiral,
 ];
 
 /**

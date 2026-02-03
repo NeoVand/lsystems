@@ -10,13 +10,13 @@ todos:
     status: completed
   - id: phase3-parametric
     content: "Phase 3: Parametric expression bytecode, GPU expression evaluator, conditional rules"
-    status: pending
+    status: completed
   - id: phase4-gpu-turtle
     content: "Phase 4: GPU turtle with parallel bracket matching, segment tree transforms, branch handling"
     status: completed
   - id: phase5-visualization
     content: "Phase 5: HSL mapping, curve LUTs, 2D/3D rendering modes, instanced geometry"
-    status: pending
+    status: in_progress
   - id: phase6-ui
     content: "Phase 6: Grammar editor, parameter controls, generation cache, timeline scrubbing"
     status: pending

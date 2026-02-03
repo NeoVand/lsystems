@@ -7,6 +7,7 @@ export * from './gpu/device';
 // Grammar
 export * from './grammar/types';
 export * from './grammar/parser';
+export * from './grammar/expression';
 
 // Derivation
 export * from './derivation/derive';

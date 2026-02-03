@@ -37,13 +37,19 @@ export interface EngineState {
 	lastInterpretTime: number;
 }
 
+/** Color mode options */
+export type ColorMode = 'depth' | 'branch' | 'position' | 'age' | 'uniform';
+
 /** Visualization settings */
 export interface VisualState {
-	colorMode: 'depth' | 'branch' | 'uniform';
+	colorMode: ColorMode;
 	backgroundColor: string;
-	lineColor: string;
+	lineColor: string; // Used for uniform mode
 	lineWidth: number;
 	showStats: boolean;
+	hueOffset: number; // 0-360, shifts the color palette
+	saturation: number; // 0-1
+	lightness: number; // 0-1
 }
 
 // ============ State Stores ============
@@ -77,6 +83,9 @@ export const visualState = $state<VisualState>({
 	lineColor: '#4ade80',
 	lineWidth: 1.5,
 	showStats: true,
+	hueOffset: 0,
+	saturation: 0.7,
+	lightness: 0.5,
 });
 
 /** Current preset name */
@@ -88,8 +97,13 @@ let cachedGrammarStr: string = '';
 let cachedIterations = -1;
 
 /** Cached interpretation (segments) - recompute when angle changes */
-let cachedSegments: LineSegment[] = $state([]);
+let cachedSegments: LineSegment[] = [];
 let cachedAngle = -1;
+let cachedColorMode: ColorMode = 'depth';
+let cachedHueOffset = 0;
+let cachedSaturation = 0.7;
+let cachedLightness = 0.5;
+let cachedLineColor = '#4ade80';
 
 /** GPU derivation context */
 let gpuDerivationCtx: GPUDerivationContext | null = null;
@@ -171,44 +185,162 @@ function deriveSymbols(): Symbol[] {
 }
 
 /**
+ * HSL to RGB conversion
+ */
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+	const c = (1 - Math.abs(2 * l - 1)) * s;
+	const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+	const m = l - c / 2;
+
+	let r: number, g: number, b: number;
+
+	if (h < 60) {
+		[r, g, b] = [c, x, 0];
+	} else if (h < 120) {
+		[r, g, b] = [x, c, 0];
+	} else if (h < 180) {
+		[r, g, b] = [0, c, x];
+	} else if (h < 240) {
+		[r, g, b] = [0, x, c];
+	} else if (h < 300) {
+		[r, g, b] = [x, 0, c];
+	} else {
+		[r, g, b] = [c, 0, x];
+	}
+
+	return [r + m, g + m, b + m];
+}
+
+/**
+ * Hex color to RGB
+ */
+function hexToRgb(hex: string): [number, number, number] {
+	const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+	if (!result) return [0.5, 0.5, 0.5];
+	return [
+		parseInt(result[1], 16) / 255,
+		parseInt(result[2], 16) / 255,
+		parseInt(result[3], 16) / 255,
+	];
+}
+
+/**
+ * Apply color to segments based on visual settings
+ */
+function applyColors(segments: LineSegment[]): void {
+	if (segments.length === 0) return;
+
+	const { colorMode, hueOffset, saturation, lightness, lineColor } = visualState;
+	
+	// Find max values for normalization
+	let maxDepth = 0;
+	let maxBranchId = 0;
+	let minX = Infinity, maxX = -Infinity;
+	let minY = Infinity, maxY = -Infinity;
+	
+	for (const seg of segments) {
+		maxDepth = Math.max(maxDepth, seg.depth);
+		maxBranchId = Math.max(maxBranchId, seg.branchId);
+		minX = Math.min(minX, seg.start[0], seg.end[0]);
+		maxX = Math.max(maxX, seg.start[0], seg.end[0]);
+		minY = Math.min(minY, seg.start[1], seg.end[1]);
+		maxY = Math.max(maxY, seg.start[1], seg.end[1]);
+	}
+	
+	const rangeX = maxX - minX || 1;
+	const rangeY = maxY - minY || 1;
+
+	for (let i = 0; i < segments.length; i++) {
+		const seg = segments[i];
+		let hue: number;
+
+		switch (colorMode) {
+			case 'depth':
+				// Color by branch depth
+				hue = (seg.depth * 60 + hueOffset) % 360;
+				break;
+			
+			case 'branch':
+				// Unique color per branch
+				hue = ((seg.branchId * 137.5) + hueOffset) % 360; // Golden angle for spread
+				break;
+			
+			case 'position':
+				// Color by position (radial gradient from center)
+				const cx = (seg.start[0] + seg.end[0]) / 2;
+				const cy = (seg.start[1] + seg.end[1]) / 2;
+				const nx = (cx - minX) / rangeX;
+				const ny = (cy - minY) / rangeY;
+				hue = (Math.atan2(ny - 0.5, nx - 0.5) * 180 / Math.PI + 180 + hueOffset) % 360;
+				break;
+			
+			case 'age':
+				// Color by drawing order
+				hue = ((i / segments.length) * 360 + hueOffset) % 360;
+				break;
+			
+			case 'uniform':
+				// Single color from lineColor setting
+				const rgb = hexToRgb(lineColor);
+				seg.color = [rgb[0], rgb[1], rgb[2], 1.0];
+				continue;
+			
+			default:
+				hue = hueOffset;
+		}
+
+		const rgb = hslToRgb(hue, saturation, lightness);
+		seg.color = [rgb[0], rgb[1], rgb[2], 1.0];
+	}
+}
+
+/**
  * Interpret symbols to segments (cached - only recomputes when angle changes)
  */
 function interpretToSegments(symbols: Symbol[]): LineSegment[] {
 	if (symbols.length === 0) return [];
 	
-	// Check if we can use cached segments
-	if (lsystemParams.angle === cachedAngle && cachedSegments.length > 0) {
+	const needsReinterpret = lsystemParams.angle !== cachedAngle || cachedSegments.length === 0;
+	const needsRecolor = needsReinterpret ||
+		visualState.colorMode !== cachedColorMode ||
+		visualState.hueOffset !== cachedHueOffset ||
+		visualState.saturation !== cachedSaturation ||
+		visualState.lightness !== cachedLightness ||
+		visualState.lineColor !== cachedLineColor;
+	
+	if (!needsReinterpret && !needsRecolor) {
 		return cachedSegments;
 	}
 
 	const startTime = performance.now();
 
-	// Need to re-interpret
-	const config: TurtleConfig = {
-		angle: lsystemParams.angle,
-		stepSize: 10, // Fixed step size - gets normalized anyway
-	};
+	if (needsReinterpret) {
+		// Need to re-interpret
+		const config: TurtleConfig = {
+			angle: lsystemParams.angle,
+			stepSize: 10, // Fixed step size - gets normalized anyway
+		};
 
-	const t1 = performance.now();
-	const segments = interpretSymbols(symbols, config);
-	const t2 = performance.now();
-	const normalized = normalizeSegments(segments, 1.8);
-	const t3 = performance.now();
-	
-	// Detailed timing (check console for bottleneck)
-	if (symbols.length > 10000) {
-		console.log(`Turtle: interpret=${(t2-t1).toFixed(1)}ms, normalize=${(t3-t2).toFixed(1)}ms, total=${(t3-startTime).toFixed(1)}ms`);
+		const segments = interpretSymbols(symbols, config);
+		cachedSegments = normalizeSegments(segments, 1.8);
+		cachedAngle = lsystemParams.angle;
 	}
 	
-	engineState.segmentCount = normalized.length;
+	// Apply colors
+	applyColors(cachedSegments);
+	
+	// Update color cache
+	cachedColorMode = visualState.colorMode;
+	cachedHueOffset = visualState.hueOffset;
+	cachedSaturation = visualState.saturation;
+	cachedLightness = visualState.lightness;
+	cachedLineColor = visualState.lineColor;
+	
+	engineState.segmentCount = cachedSegments.length;
 	engineState.lastInterpretTime = performance.now() - startTime;
 	engineState.gpuTurtleActive = false;
 
-	// Update cache
-	cachedAngle = lsystemParams.angle;
-	cachedSegments = normalized;
-
-	return normalized;
+	return cachedSegments;
 }
 
 /**
@@ -247,10 +379,39 @@ export function getSafeMaxIterations(): number {
  */
 export function loadPreset(preset: Preset): void {
 	currentPreset.name = preset.name;
-	lsystemParams.axiom = preset.grammar.axiom.map((s) => s.id).join('');
-	lsystemParams.rules = preset.grammar.rules
-		.map((r) => `${r.predecessor} -> ${r.successor.map((s) => s.id).join('')}`)
-		.join('\n');
+	
+	// Handle axiom - include params if present
+	lsystemParams.axiom = preset.grammar.axiom.map((s) => {
+		if (s.params && s.params.length > 0) {
+			return `${s.id}(${s.params.join(',')})`;
+		}
+		return s.id;
+	}).join('');
+	
+	// Build rules string
+	const ruleLines: string[] = [];
+	
+	// D0L rules
+	for (const r of preset.grammar.rules) {
+		ruleLines.push(`${r.predecessor} -> ${r.successor.map((s) => s.id).join('')}`);
+	}
+	
+	// Parametric rules
+	if (preset.grammar.parametricRules) {
+		for (const r of preset.grammar.parametricRules) {
+			const params = r.params.length > 0 ? `(${r.params.join(',')})` : '';
+			const condition = r.condition ? ` : ${stringifyExprForPreset(r.condition)}` : '';
+			const successor = r.successor.map((s) => {
+				if (s.params.length > 0) {
+					return `${s.symbol}(${s.params.map(stringifyExprForPreset).join(',')})`;
+				}
+				return s.symbol;
+			}).join('');
+			ruleLines.push(`${r.predecessor}${params}${condition} -> ${successor}`);
+		}
+	}
+	
+	lsystemParams.rules = ruleLines.join('\n');
 	lsystemParams.iterations = preset.iterations;
 	lsystemParams.angle = preset.angle;
 
@@ -258,6 +419,20 @@ export function loadPreset(preset: Preset): void {
 	cachedGrammarStr = '';
 	cachedIterations = -1;
 	cachedAngle = -1;
+}
+
+/**
+ * Stringify expression for preset display
+ */
+function stringifyExprForPreset(expr: import('../grammar/expression').Expression): string {
+	switch (expr.type) {
+		case 'number': return String(expr.value);
+		case 'variable': return expr.name;
+		case 'binary': return `${stringifyExprForPreset(expr.left)}${expr.op}${stringifyExprForPreset(expr.right)}`;
+		case 'unary': return `${expr.op}${stringifyExprForPreset(expr.operand)}`;
+		case 'call': return `${expr.name}(${expr.args.map(stringifyExprForPreset).join(',')})`;
+		default: return '0';
+	}
 }
 
 /**

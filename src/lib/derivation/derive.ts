@@ -3,43 +3,93 @@
  * Handles symbol expansion using production rules
  */
 
-import type { D0LRule, Grammar, Symbol } from '../grammar/types';
+import type { D0LRule, Grammar, ParametricRule, Symbol } from '../grammar/types';
+import { evaluateExpression, type Expression } from '../grammar/expression';
 
 /**
  * Apply one generation of derivation rules
- * D0L: Each symbol is replaced independently in parallel
+ * Supports both D0L and parametric rules
  */
-export function derive(symbols: Symbol[], rules: D0LRule[]): Symbol[] {
-	// Build rule lookup map for O(1) access
-	const ruleMap = new Map<string, Symbol[]>();
+export function derive(symbols: Symbol[], rules: D0LRule[], parametricRules: ParametricRule[] = []): Symbol[] {
+	// Build D0L rule lookup map
+	const d0lRuleMap = new Map<string, Symbol[]>();
 	for (const rule of rules) {
-		ruleMap.set(rule.predecessor, rule.successor);
+		d0lRuleMap.set(rule.predecessor, rule.successor);
 	}
 
-	// First pass: count output size for pre-allocation
-	let outputSize = 0;
-	for (let i = 0; i < symbols.length; i++) {
-		const replacement = ruleMap.get(symbols[i].id);
-		outputSize += replacement ? replacement.length : 1;
+	// Build parametric rule lookup (can have multiple rules per symbol)
+	const paramRuleMap = new Map<string, ParametricRule[]>();
+	for (const rule of parametricRules) {
+		const existing = paramRuleMap.get(rule.predecessor) || [];
+		existing.push(rule);
+		paramRuleMap.set(rule.predecessor, existing);
 	}
 
-	// Pre-allocate result array
-	const result: Symbol[] = new Array(outputSize);
-	let outIdx = 0;
+	// Process symbols - can't easily pre-allocate for parametric since output varies
+	const result: Symbol[] = [];
 
-	// Second pass: apply rules
 	for (let i = 0; i < symbols.length; i++) {
 		const symbol = symbols[i];
-		const replacement = ruleMap.get(symbol.id);
-		if (replacement) {
-			// Rule found - expand (copy symbol objects)
-			for (let j = 0; j < replacement.length; j++) {
-				result[outIdx++] = { id: replacement[j].id };
+		
+		// Try parametric rules first (if symbol has params)
+		if (symbol.params && symbol.params.length > 0) {
+			const paramRules = paramRuleMap.get(symbol.id);
+			if (paramRules) {
+				// Build variable bindings from symbol params
+				let matched = false;
+				
+				for (const rule of paramRules) {
+					if (rule.params.length !== symbol.params.length) continue;
+					
+					const vars: Record<string, number> = {};
+					for (let p = 0; p < rule.params.length; p++) {
+						vars[rule.params[p]] = symbol.params[p];
+					}
+					
+					// Check condition if present
+					if (rule.condition) {
+						try {
+							const condResult = evaluateExpression(rule.condition, vars);
+							if (!condResult) continue; // Condition not met
+						} catch {
+							continue; // Error evaluating condition
+						}
+					}
+					
+					// Apply rule - evaluate successor expressions
+					for (const succ of rule.successor) {
+						const newParams: number[] = [];
+						for (const expr of succ.params) {
+							try {
+								newParams.push(evaluateExpression(expr, vars));
+							} catch {
+								newParams.push(0);
+							}
+						}
+						result.push({
+							id: succ.symbol,
+							params: newParams.length > 0 ? newParams : undefined,
+						});
+					}
+					matched = true;
+					break; // First matching rule wins
+				}
+				
+				if (matched) continue;
 			}
-		} else {
-			// No rule - identity
-			result[outIdx++] = { id: symbol.id };
 		}
+		
+		// Try D0L rules
+		const d0lReplacement = d0lRuleMap.get(symbol.id);
+		if (d0lReplacement) {
+			for (let j = 0; j < d0lReplacement.length; j++) {
+				result.push({ id: d0lReplacement[j].id });
+			}
+			continue;
+		}
+		
+		// No rule - identity
+		result.push({ id: symbol.id, params: symbol.params });
 	}
 
 	return result;
@@ -50,9 +100,10 @@ export function derive(symbols: Symbol[], rules: D0LRule[]): Symbol[] {
  */
 export function deriveN(grammar: Grammar, generations: number): Symbol[] {
 	let symbols = [...grammar.axiom];
+	const parametricRules = grammar.parametricRules || [];
 
 	for (let i = 0; i < generations; i++) {
-		symbols = derive(symbols, grammar.rules);
+		symbols = derive(symbols, grammar.rules, parametricRules);
 	}
 
 	return symbols;
@@ -64,11 +115,12 @@ export function deriveN(grammar: Grammar, generations: number): Symbol[] {
 export function getGenerationStats(grammar: Grammar, maxGenerations: number): number[] {
 	const stats: number[] = [];
 	let symbols = [...grammar.axiom];
+	const parametricRules = grammar.parametricRules || [];
 
 	stats.push(symbols.length);
 
 	for (let i = 0; i < maxGenerations; i++) {
-		symbols = derive(symbols, grammar.rules);
+		symbols = derive(symbols, grammar.rules, parametricRules);
 		stats.push(symbols.length);
 	}
 

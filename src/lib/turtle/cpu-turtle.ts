@@ -84,7 +84,10 @@ export function interpretSymbols(
 	let nextBranchId = 1;
 
 	for (let i = 0; i < symbols.length; i++) {
-		const cmd = symbols[i].id;
+		const sym = symbols[i];
+		const cmd = sym.id;
+		// Use first parameter as step size if available, otherwise default
+		const symStep = (sym.params && sym.params.length > 0) ? sym.params[0] : step;
 
 		switch (cmd) {
 			case 'F':
@@ -92,8 +95,8 @@ export function interpretSymbols(
 				// Move forward and draw
 				const cosA = Math.cos(angle);
 				const sinA = Math.sin(angle);
-				const newX = x + cosA * step;
-				const newY = y + sinA * step;
+				const newX = x + cosA * symStep;
+				const newY = y + sinA * symStep;
 
 				segments[segIdx++] = {
 					start: [x, y, z],
@@ -111,20 +114,26 @@ export function interpretSymbols(
 			case 'f':
 			case 'g': {
 				// Move forward without drawing
-				x += Math.cos(angle) * step;
-				y += Math.sin(angle) * step;
+				x += Math.cos(angle) * symStep;
+				y += Math.sin(angle) * symStep;
 				break;
 			}
 
 			case '+': {
-				// Turn left (counter-clockwise)
-				angle += angleRad;
+				// Turn left (counter-clockwise) - use param as angle if provided
+				const turnAngle = (sym.params && sym.params.length > 0) 
+					? toRadians(sym.params[0]) 
+					: angleRad;
+				angle += turnAngle;
 				break;
 			}
 
 			case '-': {
-				// Turn right (clockwise)
-				angle -= angleRad;
+				// Turn right (clockwise) - use param as angle if provided
+				const turnAngle = (sym.params && sym.params.length > 0) 
+					? toRadians(sym.params[0]) 
+					: angleRad;
+				angle -= turnAngle;
 				break;
 			}
 
