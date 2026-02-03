@@ -17,15 +17,20 @@
 
 	let segments: LineSegment[] = $state([]);
 	let panelOpen = $state(true);
-	let activeTab: 'preset' | 'grammar' | 'params' = $state('preset');
+	let activeTab: 'preset' | 'grammar' | 'params' | 'visual' = $state('preset');
 
-	// Recompute segments when parameters change
+	// Recompute segments when parameters or visual settings change
 	$effect(() => {
 		// Track these dependencies
 		void lsystemParams.axiom;
 		void lsystemParams.rules;
 		void lsystemParams.iterations;
 		void lsystemParams.angle;
+		void visualState.colorMode;
+		void visualState.hueOffset;
+		void visualState.saturation;
+		void visualState.lightness;
+		void visualState.lineColor;
 		
 		// Use untrack to avoid tracking state updates
 		untrack(() => {
@@ -94,21 +99,27 @@
 			<div class="flex border-b border-neutral-700/50">
 				<button
 					onclick={() => (activeTab = 'preset')}
-					class="flex-1 px-4 py-3 text-sm font-medium transition-colors {activeTab === 'preset' ? 'text-emerald-400 bg-neutral-800/50' : 'text-neutral-400 hover:text-neutral-200'}"
+					class="flex-1 px-3 py-3 text-xs font-medium transition-colors {activeTab === 'preset' ? 'text-emerald-400 bg-neutral-800/50' : 'text-neutral-400 hover:text-neutral-200'}"
 				>
 					Presets
 				</button>
 				<button
 					onclick={() => (activeTab = 'grammar')}
-					class="flex-1 px-4 py-3 text-sm font-medium transition-colors {activeTab === 'grammar' ? 'text-emerald-400 bg-neutral-800/50' : 'text-neutral-400 hover:text-neutral-200'}"
+					class="flex-1 px-3 py-3 text-xs font-medium transition-colors {activeTab === 'grammar' ? 'text-emerald-400 bg-neutral-800/50' : 'text-neutral-400 hover:text-neutral-200'}"
 				>
 					Grammar
 				</button>
 				<button
 					onclick={() => (activeTab = 'params')}
-					class="flex-1 px-4 py-3 text-sm font-medium transition-colors {activeTab === 'params' ? 'text-emerald-400 bg-neutral-800/50' : 'text-neutral-400 hover:text-neutral-200'}"
+					class="flex-1 px-3 py-3 text-xs font-medium transition-colors {activeTab === 'params' ? 'text-emerald-400 bg-neutral-800/50' : 'text-neutral-400 hover:text-neutral-200'}"
 				>
-					Parameters
+					Params
+				</button>
+				<button
+					onclick={() => (activeTab = 'visual')}
+					class="flex-1 px-3 py-3 text-xs font-medium transition-colors {activeTab === 'visual' ? 'text-emerald-400 bg-neutral-800/50' : 'text-neutral-400 hover:text-neutral-200'}"
+				>
+					Visual
 				</button>
 			</div>
 
@@ -142,6 +153,97 @@
 					</details>
 				{:else if activeTab === 'params'}
 					<Controls />
+				{:else if activeTab === 'visual'}
+					<!-- Color Mode -->
+					<div class="space-y-4">
+						<div>
+							<label class="block text-sm font-medium text-neutral-300 mb-2">Color Mode</label>
+							<div class="grid grid-cols-2 gap-2">
+								{#each ['depth', 'branch', 'age', 'position', 'uniform'] as mode}
+									<button
+										onclick={() => (visualState.colorMode = mode as typeof visualState.colorMode)}
+										class="px-3 py-2 text-xs rounded-lg transition-colors {visualState.colorMode === mode ? 'bg-emerald-600 text-white' : 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700'}"
+									>
+										{mode.charAt(0).toUpperCase() + mode.slice(1)}
+									</button>
+								{/each}
+							</div>
+						</div>
+
+						<!-- Hue Offset -->
+						<div>
+							<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
+								<span>Hue Shift</span>
+								<span class="text-neutral-500">{visualState.hueOffset}°</span>
+							</label>
+							<input
+								type="range"
+								min="0"
+								max="360"
+								step="1"
+								bind:value={visualState.hueOffset}
+								class="w-full h-2 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+							/>
+						</div>
+
+						<!-- Saturation -->
+						<div>
+							<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
+								<span>Saturation</span>
+								<span class="text-neutral-500">{Math.round(visualState.saturation * 100)}%</span>
+							</label>
+							<input
+								type="range"
+								min="0"
+								max="1"
+								step="0.05"
+								bind:value={visualState.saturation}
+								class="w-full h-2 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+							/>
+						</div>
+
+						<!-- Lightness -->
+						<div>
+							<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
+								<span>Lightness</span>
+								<span class="text-neutral-500">{Math.round(visualState.lightness * 100)}%</span>
+							</label>
+							<input
+								type="range"
+								min="0.1"
+								max="0.9"
+								step="0.05"
+								bind:value={visualState.lightness}
+								class="w-full h-2 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+							/>
+						</div>
+
+						<!-- Uniform Color (only shown when uniform mode) -->
+						{#if visualState.colorMode === 'uniform'}
+							<div>
+								<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
+									<span>Line Color</span>
+									<input
+										type="color"
+										bind:value={visualState.lineColor}
+										class="w-8 h-8 rounded cursor-pointer bg-transparent"
+									/>
+								</label>
+							</div>
+						{/if}
+
+						<!-- Background Color -->
+						<div>
+							<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
+								<span>Background</span>
+								<input
+									type="color"
+									bind:value={visualState.backgroundColor}
+									class="w-8 h-8 rounded cursor-pointer bg-transparent"
+								/>
+							</label>
+						</div>
+					</div>
 				{/if}
 			</div>
 
