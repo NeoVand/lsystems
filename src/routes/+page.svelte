@@ -2,20 +2,25 @@
 	import { onMount } from 'svelte';
 	import { untrack } from 'svelte';
 	import Canvas from '$lib/components/Canvas.svelte';
+	import Canvas3D from '$lib/components/Canvas3D.svelte';
 	import Editor from '$lib/components/Editor.svelte';
 	import Controls from '$lib/components/Controls.svelte';
 	import PresetSelector from '$lib/components/PresetSelector.svelte';
 	import {
 		computeSegments,
+		computeSegments3D,
 		visualState,
 		engineState,
 		lsystemParams,
 		loadPreset,
+		regenerate,
 	} from '$lib/stores/lsystem.svelte';
 	import { plant1 } from '$lib/presets/examples';
 	import type { LineSegment } from '$lib/gpu/types';
+	import type { Segment3D } from '$lib/turtle/turtle-3d';
 
 	let segments: LineSegment[] = $state([]);
+	let segments3D: Segment3D[] = $state([]);
 	let panelOpen = $state(true);
 	let activeTab: 'preset' | 'grammar' | 'params' | 'visual' = $state('preset');
 
@@ -31,10 +36,15 @@
 		void visualState.saturation;
 		void visualState.lightness;
 		void visualState.lineColor;
+		void visualState.is3D;
 		
 		// Use untrack to avoid tracking state updates
 		untrack(() => {
-			segments = computeSegments();
+			if (visualState.is3D) {
+				segments3D = computeSegments3D();
+			} else {
+				segments = computeSegments();
+			}
 		});
 	});
 
@@ -51,9 +61,15 @@
 	<title>L-System Lab</title>
 </svelte:head>
 
-<!-- Full-screen canvas -->
+<!-- Full-screen canvas (2D or 3D) - key forces clean WebGPU reinit on mode switch -->
 <div class="fixed inset-0 bg-neutral-950">
-	<Canvas {segments} backgroundColor={visualState.backgroundColor} />
+	{#key visualState.is3D}
+		{#if visualState.is3D}
+			<Canvas3D segments={segments3D} backgroundColor={visualState.backgroundColor} />
+		{:else}
+			<Canvas {segments} backgroundColor={visualState.backgroundColor} />
+		{/if}
+	{/key}
 </div>
 
 <!-- Floating control panel -->
@@ -89,6 +105,16 @@
 				</div>
 				<span class="text-sm font-medium text-white">L-System Lab</span>
 			</div>
+			<button
+				onclick={() => { regenerate(); segments = computeSegments(); }}
+				class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-neutral-800/90 backdrop-blur text-neutral-300 hover:bg-neutral-700 hover:text-white transition-colors text-xs"
+				title="Regenerate (new random values for stochastic presets)"
+			>
+				<svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+				</svg>
+				Regenerate
+			</button>
 		{/if}
 	</div>
 
@@ -142,13 +168,63 @@
 								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
 							</svg>
 						</summary>
-						<div class="mt-3 space-y-1 text-xs text-neutral-500">
-							<div><code class="text-emerald-400">F, G</code> - Move forward and draw line</div>
-							<div><code class="text-emerald-400">f</code> - Move forward without drawing</div>
-							<div><code class="text-emerald-400">+</code> - Turn left by angle</div>
-							<div><code class="text-emerald-400">-</code> - Turn right by angle</div>
-							<div><code class="text-emerald-400">[</code> - Save position (start branch)</div>
-							<div><code class="text-emerald-400">]</code> - Restore position (end branch)</div>
+						<div class="mt-3 space-y-4 text-xs">
+							<!-- Drawing -->
+							<div>
+								<div class="text-neutral-400 font-medium mb-1">Drawing</div>
+								<div class="space-y-0.5 text-neutral-500">
+									<div><code class="text-emerald-400">F, G</code> - Move forward and draw</div>
+									<div><code class="text-emerald-400">f, g</code> - Move forward (no draw)</div>
+								</div>
+							</div>
+							
+							<!-- 2D Rotation -->
+							<div>
+								<div class="text-neutral-400 font-medium mb-1">2D Rotation (Yaw)</div>
+								<div class="space-y-0.5 text-neutral-500">
+									<div><code class="text-emerald-400">+</code> - Turn left by angle</div>
+									<div><code class="text-emerald-400">-</code> - Turn right by angle</div>
+									<div><code class="text-emerald-400">|</code> - Turn around (180°)</div>
+								</div>
+							</div>
+							
+							<!-- 3D Rotation -->
+							<div>
+								<div class="text-neutral-400 font-medium mb-1">3D Rotation</div>
+								<div class="space-y-0.5 text-neutral-500">
+									<div><code class="text-emerald-400">&</code> - Pitch down</div>
+									<div><code class="text-emerald-400">^</code> - Pitch up</div>
+									<div><code class="text-emerald-400">\</code> - Roll left</div>
+									<div><code class="text-emerald-400">/</code> - Roll right</div>
+								</div>
+							</div>
+							
+							<!-- Branching -->
+							<div>
+								<div class="text-neutral-400 font-medium mb-1">Branching</div>
+								<div class="space-y-0.5 text-neutral-500">
+									<div><code class="text-emerald-400">[</code> - Push state (start branch)</div>
+									<div><code class="text-emerald-400">]</code> - Pop state (end branch)</div>
+								</div>
+							</div>
+							
+							<!-- Parametric -->
+							<div>
+								<div class="text-neutral-400 font-medium mb-1">Parametric Syntax</div>
+								<div class="space-y-0.5 text-neutral-500">
+									<div><code class="text-emerald-400">A(x,y)</code> - Symbol with params</div>
+									<div><code class="text-emerald-400">A(x) : x&gt;1</code> - Conditional rule</div>
+									<div><code class="text-emerald-400">A(x) -&gt; B(x*0.7)</code> - Transform</div>
+								</div>
+							</div>
+							
+							<!-- Stochastic -->
+							<div>
+								<div class="text-neutral-400 font-medium mb-1">Stochastic</div>
+								<div class="space-y-0.5 text-neutral-500">
+									<div><code class="text-emerald-400">F -&gt; FF (0.5)</code> - 50% probability</div>
+								</div>
+							</div>
 						</div>
 					</details>
 				{:else if activeTab === 'params'}

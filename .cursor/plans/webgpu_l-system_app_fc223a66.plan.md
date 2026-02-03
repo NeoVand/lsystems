@@ -15,14 +15,14 @@ todos:
     content: "Phase 4: GPU turtle with parallel bracket matching, segment tree transforms, branch handling"
     status: completed
   - id: phase5-visualization
-    content: "Phase 5: HSL mapping, curve LUTs, 2D/3D rendering modes, instanced geometry"
-    status: in_progress
+    content: "Phase 5: HSL mapping, color modes (depth/branch/age/position/uniform), PNG/SVG export"
+    status: completed
   - id: phase6-ui
     content: "Phase 6: Grammar editor, parameter controls, generation cache, timeline scrubbing"
     status: pending
   - id: phase7-advanced
-    content: "Phase 7: Stochastic rules, context-sensitive matching, continuous growth interpolation"
-    status: pending
+    content: "Phase 7: Stochastic rules (done), context-sensitive matching, continuous growth interpolation"
+    status: in_progress
 isProject: false
 ---
 

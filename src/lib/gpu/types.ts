@@ -60,6 +60,7 @@ export interface LineSegment {
 	depth: number;
 	branchId: number;
 	color: [number, number, number, number];
+	width?: number; // Line width (optional, computed from depth if not set)
 }
 
 /** WebGPU context state */

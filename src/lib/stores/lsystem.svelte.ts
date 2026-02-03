@@ -8,6 +8,7 @@ import type { LineSegment } from '../gpu/types';
 import type { Preset } from '../presets/examples';
 import { deriveN, getGenerationStats, calculateSafeGenerations } from '../derivation/derive';
 import { interpretSymbols, normalizeSegments, type TurtleConfig } from '../turtle/cpu-turtle';
+import { interpretSymbols3D, normalizeSegments3D, type Segment3D } from '../turtle/turtle-3d';
 import { parseGrammar, isParseError, serializeGrammar } from '../grammar/parser';
 import { plant1, allPresets } from '../presets/examples';
 import type { GPUDerivationContext } from '../derivation/gpu-derive';
@@ -48,6 +49,7 @@ export interface VisualState {
 	lineWidth: number;
 	showStats: boolean;
 	hueOffset: number; // 0-360, shifts the color palette
+	is3D: boolean; // 3D rendering mode
 	saturation: number; // 0-1
 	lightness: number; // 0-1
 }
@@ -81,11 +83,12 @@ export const visualState = $state<VisualState>({
 	colorMode: 'depth',
 	backgroundColor: '#0a0a0f',
 	lineColor: '#4ade80',
-	lineWidth: 1.5,
+	lineWidth: 1.0, // Line width multiplier (1.0 = default)
 	showStats: true,
 	hueOffset: 0,
 	saturation: 0.7,
 	lightness: 0.5,
+	is3D: false,
 });
 
 /** Current preset name */
@@ -351,6 +354,156 @@ export function computeSegments(): LineSegment[] {
 	return interpretToSegments(symbols);
 }
 
+// ============ 3D Support ============
+
+let cached3DSegments: Segment3D[] = [];
+let cached3DAngle = -1;
+let cached3DGrammarStr = '';
+let cached3DIterations = -1;
+let cached3DColorMode: ColorMode = 'depth';
+let cached3DHueOffset = 0;
+let cached3DSaturation = 0.7;
+let cached3DLightness = 0.5;
+let cached3DLineColor = '#4ade80';
+
+/**
+ * Apply colors to 3D segments based on visual settings
+ */
+function applyColors3D(segments: Segment3D[]): void {
+	if (segments.length === 0) return;
+
+	const { colorMode, hueOffset, saturation, lightness, lineColor } = visualState;
+	
+	// Find max values for normalization
+	let maxDepth = 0;
+	let maxBranchId = 0;
+	let minX = Infinity, maxX = -Infinity;
+	let minY = Infinity, maxY = -Infinity;
+	let minZ = Infinity, maxZ = -Infinity;
+	
+	for (const seg of segments) {
+		maxDepth = Math.max(maxDepth, seg.depth);
+		maxBranchId = Math.max(maxBranchId, seg.branchId);
+		minX = Math.min(minX, seg.start[0], seg.end[0]);
+		maxX = Math.max(maxX, seg.start[0], seg.end[0]);
+		minY = Math.min(minY, seg.start[1], seg.end[1]);
+		maxY = Math.max(maxY, seg.start[1], seg.end[1]);
+		minZ = Math.min(minZ, seg.start[2], seg.end[2]);
+		maxZ = Math.max(maxZ, seg.start[2], seg.end[2]);
+	}
+	
+	const rangeX = maxX - minX || 1;
+	const rangeY = maxY - minY || 1;
+	const rangeZ = maxZ - minZ || 1;
+	const maxRange = Math.max(rangeX, rangeY, rangeZ);
+
+	for (let i = 0; i < segments.length; i++) {
+		const seg = segments[i];
+		let hue: number;
+
+		switch (colorMode) {
+			case 'depth':
+				hue = (seg.depth * 60 + hueOffset) % 360;
+				break;
+			
+			case 'branch':
+				hue = ((seg.branchId * 137.5) + hueOffset) % 360;
+				break;
+			
+			case 'position':
+				// 3D position-based color using distance from center
+				const cx = (seg.start[0] + seg.end[0]) / 2;
+				const cy = (seg.start[1] + seg.end[1]) / 2;
+				const cz = (seg.start[2] + seg.end[2]) / 2;
+				const dist = Math.sqrt(cx*cx + cy*cy + cz*cz);
+				hue = ((dist / (maxRange * 0.5)) * 180 + hueOffset) % 360;
+				break;
+			
+			case 'age':
+				hue = ((i / segments.length) * 360 + hueOffset) % 360;
+				break;
+			
+			case 'uniform':
+				const rgb = hexToRgb(lineColor);
+				seg.color = [rgb[0], rgb[1], rgb[2], 1.0];
+				continue;
+			
+			default:
+				hue = hueOffset;
+		}
+
+		const rgb = hslToRgb(hue, saturation, lightness);
+		seg.color = [rgb[0], rgb[1], rgb[2], 1.0];
+	}
+}
+
+/**
+ * Compute 3D segments from current state
+ */
+export function computeSegments3D(): Segment3D[] {
+	const symbols = deriveSymbols();
+	if (symbols.length === 0) return [];
+	
+	const grammarStr = serializeGrammar(getCurrentGrammarPure()!);
+	
+	// Check if we need to reinterpret (grammar, iterations, or angle changed)
+	const needsReinterpret = 
+		grammarStr !== cached3DGrammarStr ||
+		lsystemParams.iterations !== cached3DIterations ||
+		lsystemParams.angle !== cached3DAngle ||
+		cached3DSegments.length === 0;
+	
+	// Check if we need to recolor
+	const needsRecolor = needsReinterpret ||
+		visualState.colorMode !== cached3DColorMode ||
+		visualState.hueOffset !== cached3DHueOffset ||
+		visualState.saturation !== cached3DSaturation ||
+		visualState.lightness !== cached3DLightness ||
+		visualState.lineColor !== cached3DLineColor;
+	
+	if (!needsReinterpret && !needsRecolor) {
+		return cached3DSegments;
+	}
+	
+	const startTime = performance.now();
+	
+	if (needsReinterpret) {
+		const segments = interpretSymbols3D(symbols, {
+			angle: lsystemParams.angle,
+			stepSize: 10,
+		});
+		
+		cached3DSegments = normalizeSegments3D(segments, 1.8);
+		cached3DGrammarStr = grammarStr;
+		cached3DIterations = lsystemParams.iterations;
+		cached3DAngle = lsystemParams.angle;
+	}
+	
+	// Apply colors based on visual settings
+	applyColors3D(cached3DSegments);
+	
+	// Update color cache
+	cached3DColorMode = visualState.colorMode;
+	cached3DHueOffset = visualState.hueOffset;
+	cached3DSaturation = visualState.saturation;
+	cached3DLightness = visualState.lightness;
+	cached3DLineColor = visualState.lineColor;
+	
+	engineState.segmentCount = cached3DSegments.length;
+	engineState.lastInterpretTime = performance.now() - startTime;
+	
+	// Return a new array reference so Canvas3D detects the change
+	// (colors are modified in place, so we need a new reference to trigger re-upload)
+	return [...cached3DSegments];
+}
+
+/**
+ * Check if current state is 3D
+ */
+export function is3DMode(): boolean {
+	return visualState.is3D;
+}
+
 /**
  * Get generation statistics (pure, no side effects)
  */
@@ -414,11 +567,17 @@ export function loadPreset(preset: Preset): void {
 	lsystemParams.rules = ruleLines.join('\n');
 	lsystemParams.iterations = preset.iterations;
 	lsystemParams.angle = preset.angle;
+	
+	// Set 3D mode based on preset
+	visualState.is3D = preset.is3D ?? false;
 
 	// Clear cache to force recompute
 	cachedGrammarStr = '';
 	cachedIterations = -1;
 	cachedAngle = -1;
+	cachedSegments = [];
+	cached3DSegments = [];
+	cached3DAngle = -1;
 }
 
 /**
@@ -440,6 +599,18 @@ function stringifyExprForPreset(expr: import('../grammar/expression').Expression
  */
 export function reset(): void {
 	loadPreset(plant1);
+}
+
+/**
+ * Regenerate - clears cache to force new random values for stochastic L-systems
+ */
+export function regenerate(): void {
+	cachedGrammarStr = '';
+	cachedIterations = -1;
+	cachedSegments = [];
+	cachedAngle = -1;
+	cached3DSegments = [];
+	cached3DAngle = -1;
 }
 
 /**

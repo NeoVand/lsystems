@@ -69,7 +69,7 @@
 		
 		if (!renderer || !isInitialized) return;
 		
-		// Check if segments actually changed (by reference or length)
+		// Check if segments actually changed
 		if (currentSegments !== lastSegmentsRef || currentSegments.length !== uploadedSegmentCount) {
 			if (currentSegments.length > 0) {
 				renderer.updateSegments(currentSegments);
@@ -168,6 +168,67 @@
 		offsetX = 0;
 		offsetY = 0;
 	}
+
+	// Export canvas as PNG
+	function exportPNG() {
+		if (!canvas) return;
+		
+		// Create a temporary link and trigger download
+		const link = document.createElement('a');
+		link.download = `lsystem-${Date.now()}.png`;
+		link.href = canvas.toDataURL('image/png');
+		link.click();
+	}
+
+	// Export as SVG
+	function exportSVG() {
+		if (segments.length === 0) return;
+		
+		// Calculate bounds
+		let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+		for (const seg of segments) {
+			minX = Math.min(minX, seg.start[0], seg.end[0]);
+			minY = Math.min(minY, seg.start[1], seg.end[1]);
+			maxX = Math.max(maxX, seg.start[0], seg.end[0]);
+			maxY = Math.max(maxY, seg.start[1], seg.end[1]);
+		}
+		
+		const padding = 0.1;
+		const width = maxX - minX + padding * 2;
+		const height = maxY - minY + padding * 2;
+		const svgWidth = 800;
+		const svgHeight = 800;
+		const scaleFactor = Math.min(svgWidth / width, svgHeight / height);
+		
+		// Generate SVG
+		let paths = '';
+		for (const seg of segments) {
+			const x1 = (seg.start[0] - minX + padding) * scaleFactor;
+			const y1 = svgHeight - (seg.start[1] - minY + padding) * scaleFactor; // Flip Y
+			const x2 = (seg.end[0] - minX + padding) * scaleFactor;
+			const y2 = svgHeight - (seg.end[1] - minY + padding) * scaleFactor;
+			const r = Math.round(seg.color[0] * 255);
+			const g = Math.round(seg.color[1] * 255);
+			const b = Math.round(seg.color[2] * 255);
+			paths += `<line x1="${x1.toFixed(2)}" y1="${y1.toFixed(2)}" x2="${x2.toFixed(2)}" y2="${y2.toFixed(2)}" stroke="rgb(${r},${g},${b})" stroke-width="1"/>\n`;
+		}
+		
+		const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}">
+<rect width="100%" height="100%" fill="#0a0a0f"/>
+${paths}</svg>`;
+		
+		// Download
+		const blob = new Blob([svg], { type: 'image/svg+xml' });
+		const link = document.createElement('a');
+		link.download = `lsystem-${Date.now()}.svg`;
+		link.href = URL.createObjectURL(blob);
+		link.click();
+		URL.revokeObjectURL(link.href);
+	}
+
+	// Expose export functions
+	export { exportPNG, exportSVG };
 
 	function handleResize() {
 		if (!container || !canvas || !gpuContext) return;
@@ -269,6 +330,25 @@
 	<!-- Zoom controls -->
 	{#if isInitialized}
 		<div class="absolute bottom-4 right-4 flex items-center gap-2">
+			<div class="flex items-center rounded-lg bg-neutral-800/90 backdrop-blur overflow-hidden">
+				<button
+					onclick={exportPNG}
+					class="px-3 py-2 text-neutral-300 hover:bg-emerald-600 hover:text-white transition-colors text-xs flex items-center gap-1"
+					title="Export as PNG"
+				>
+					<svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+					</svg>
+					PNG
+				</button>
+				<button
+					onclick={exportSVG}
+					class="px-3 py-2 text-neutral-300 hover:bg-emerald-600 hover:text-white transition-colors text-xs border-l border-neutral-700"
+					title="Export as SVG (vector)"
+				>
+					SVG
+				</button>
+			</div>
 			<div class="flex items-center rounded-lg bg-neutral-800/90 backdrop-blur overflow-hidden">
 				<button
 					onclick={() => (scale = Math.max(0.1, scale * 0.8))}

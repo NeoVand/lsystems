@@ -91,8 +91,7 @@ export class Renderer2D {
 			code: fragmentShader,
 		});
 
-		// Create uniform buffer
-		// WGSL struct alignment: vec2f(8) + f32(4) + f32(4) + f32(4) + padding to 16 + vec3f(12) = 48 bytes
+		// Create uniform buffer (48 bytes aligned)
 		this.uniformBuffer = device.createBuffer({
 			label: 'Uniforms',
 			size: 48,
@@ -167,11 +166,10 @@ export class Renderer2D {
 	 */
 	updateSegments(segments: LineSegment[]): void {
 		const { device } = this.ctx;
-		const floatsNeeded = segments.length * 2 * 6; // 6 floats per vertex
+		const floatsNeeded = segments.length * 2 * 6; // 2 vertices per line, 6 floats per vertex
 
 		// Reuse or grow the vertex data buffer
 		if (!this.vertexDataBuffer || this.vertexDataBuffer.length < floatsNeeded) {
-			// Allocate with some headroom to avoid frequent reallocations
 			this.vertexDataBuffer = new Float32Array(Math.max(floatsNeeded, floatsNeeded * 1.5));
 		}
 		
@@ -228,10 +226,10 @@ export class Renderer2D {
 			uniforms.scale,        // offset 8
 			uniforms.offsetX,      // offset 12
 			uniforms.offsetY,      // offset 16
-			0,                     // offset 20 (padding to align vec3f to 16 bytes)
+			0,                     // offset 20 (padding)
 			0,                     // offset 24
 			0,                     // offset 28
-			0, 0, 0,               // offset 32: vec3f _padding (12 bytes)
+			0, 0, 0,               // offset 32: vec3f _padding
 			0,                     // offset 44 (padding to 48)
 		]);
 

@@ -14,6 +14,7 @@ export interface Symbol {
 export interface D0LRule {
 	predecessor: string; // Single symbol to match
 	successor: Symbol[]; // Replacement symbols
+	probability?: number; // For stochastic rules (0-1, default 1.0)
 }
 
 /** A parametric rule with conditions and expressions */

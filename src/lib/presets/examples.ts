@@ -6,12 +6,16 @@
 import type { Grammar } from '../grammar/types';
 import { quickGrammar } from '../grammar/parser';
 
+export type PresetCategory = 'fractals' | 'plants' | 'tilings' | 'parametric' | 'stochastic';
+
 export interface Preset {
 	name: string;
 	description: string;
 	grammar: Grammar;
 	angle: number;
 	iterations: number;
+	category?: PresetCategory;
+	is3D?: boolean; // True for 3D L-systems
 }
 
 /**
@@ -26,6 +30,7 @@ export const kochSnowflake: Preset = {
 	}),
 	angle: 60,
 	iterations: 4,
+	category: 'fractals',
 };
 
 /**
@@ -39,6 +44,7 @@ export const kochCurve: Preset = {
 	}),
 	angle: 90,
 	iterations: 4,
+	category: 'fractals',
 };
 
 /**
@@ -344,6 +350,127 @@ export const parametricSpiral: Preset = {
 };
 
 /**
+ * Stochastic Bush
+ * Random variation in branching using probabilistic rules
+ */
+export const stochasticBush: Preset = {
+	name: 'Stochastic Bush',
+	description: 'Randomized branching for natural variation',
+	grammar: {
+		axiom: [{ id: 'F' }],
+		rules: [
+			// Three different branching patterns with equal probability
+			{
+				predecessor: 'F',
+				successor: [
+					{ id: 'F' }, { id: 'F' }, { id: '+' },
+					{ id: '[' }, { id: '+' }, { id: 'F' }, { id: '-' }, { id: 'F' }, { id: '-' }, { id: 'F' }, { id: ']' },
+					{ id: '-' },
+					{ id: '[' }, { id: '-' }, { id: 'F' }, { id: '+' }, { id: 'F' }, { id: '+' }, { id: 'F' }, { id: ']' },
+				],
+				probability: 0.33,
+			},
+			{
+				predecessor: 'F',
+				successor: [
+					{ id: 'F' }, { id: 'F' }, { id: '-' },
+					{ id: '[' }, { id: '-' }, { id: 'F' }, { id: '+' }, { id: 'F' }, { id: ']' },
+					{ id: '+' },
+					{ id: '[' }, { id: '+' }, { id: 'F' }, { id: '-' }, { id: 'F' }, { id: ']' },
+				],
+				probability: 0.33,
+			},
+			{
+				predecessor: 'F',
+				successor: [
+					{ id: 'F' }, { id: '-' },
+					{ id: '[' }, { id: '[' }, { id: 'F' }, { id: ']' }, { id: '+' }, { id: 'F' }, { id: ']' },
+					{ id: '+' }, { id: 'F' },
+					{ id: '[' }, { id: '+' }, { id: 'F' }, { id: 'F' }, { id: ']' }, { id: '-' }, { id: 'F' },
+				],
+				probability: 0.34,
+			},
+		],
+		parametricRules: [],
+	},
+	angle: 22.5,
+	iterations: 4,
+};
+
+/**
+ * 3D Tree
+ * Classic 3D branching structure using pitch and yaw
+ */
+export const tree3D: Preset = {
+	name: '3D Tree',
+	description: '3D branching tree with pitch and yaw rotations',
+	grammar: quickGrammar('A', {
+		A: 'F[&FA][^FA][+FA][-FA]',
+		F: 'FF',
+	}),
+	angle: 25.7,
+	iterations: 4,
+	category: 'plants',
+	is3D: true,
+};
+
+/**
+ * 3D Bush
+ * Dense 3D branching structure
+ */
+export const bush3D: Preset = {
+	name: '3D Bush',
+	description: 'Dense 3D bush with all rotations',
+	grammar: quickGrammar('A', {
+		A: '[&FL!A]/////[&FL!A]///////[&FL!A]',
+		F: 'S/////F',
+		S: 'FL',
+		L: '[^^F]',
+	}),
+	angle: 22.5,
+	iterations: 5,
+	category: 'plants',
+	is3D: true,
+};
+
+/**
+ * 3D Hilbert Curve
+ * Space-filling curve in 3D
+ */
+export const hilbert3D: Preset = {
+	name: '3D Hilbert',
+	description: '3D space-filling Hilbert curve',
+	grammar: quickGrammar('A', {
+		A: 'B-F+CFC+F-D&F^D-F+&&CFC+F+B//',
+		B: 'A&F^CFB^F^D^^-F-D^|F^B|FC^F^A//',
+		C: '|D^|F^B-F+C^F^A&&FA&F^C+F+B^F^D//',
+		D: '|CFB-F+B|FA&F^A&&FB-F+B|FC//',
+	}),
+	angle: 90,
+	iterations: 2,
+	category: 'fractals',
+	is3D: true,
+};
+
+/**
+ * Spiral Tower
+ * Rising spiral structure
+ */
+export const spiralTower: Preset = {
+	name: 'Spiral Tower',
+	description: 'Rising spiral tower in 3D',
+	grammar: quickGrammar('A', {
+		A: 'F[+B]&A',
+		B: 'F[-C]^B',
+		C: 'FC',
+	}),
+	angle: 15,
+	iterations: 12,
+	category: 'fractals',
+	is3D: true,
+};
+
+/**
  * All presets as array
  */
 export const allPresets: Preset[] = [
@@ -366,6 +493,11 @@ export const allPresets: Preset[] = [
 	parametricTree,
 	parametricBush,
 	parametricSpiral,
+	stochasticBush,
+	tree3D,
+	bush3D,
+	hilbert3D,
+	spiralTower,
 ];
 
 /**

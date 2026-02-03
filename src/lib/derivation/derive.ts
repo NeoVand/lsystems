@@ -7,14 +7,42 @@ import type { D0LRule, Grammar, ParametricRule, Symbol } from '../grammar/types'
 import { evaluateExpression, type Expression } from '../grammar/expression';
 
 /**
+ * Select a rule stochastically from a list of rules with probabilities
+ */
+function selectStochasticRule<T extends { probability?: number }>(rules: T[]): T {
+	if (rules.length === 1) return rules[0];
+	
+	// Calculate total probability
+	let totalProb = 0;
+	for (const rule of rules) {
+		totalProb += rule.probability ?? 1;
+	}
+	
+	// Normalize if needed and pick randomly
+	const rand = Math.random() * totalProb;
+	let cumulative = 0;
+	
+	for (const rule of rules) {
+		cumulative += rule.probability ?? 1;
+		if (rand < cumulative) {
+			return rule;
+		}
+	}
+	
+	return rules[rules.length - 1];
+}
+
+/**
  * Apply one generation of derivation rules
- * Supports both D0L and parametric rules
+ * Supports D0L, parametric, and stochastic rules
  */
 export function derive(symbols: Symbol[], rules: D0LRule[], parametricRules: ParametricRule[] = []): Symbol[] {
-	// Build D0L rule lookup map
-	const d0lRuleMap = new Map<string, Symbol[]>();
+	// Build D0L rule lookup map (group by predecessor for stochastic support)
+	const d0lRuleMap = new Map<string, D0LRule[]>();
 	for (const rule of rules) {
-		d0lRuleMap.set(rule.predecessor, rule.successor);
+		const existing = d0lRuleMap.get(rule.predecessor) || [];
+		existing.push(rule);
+		d0lRuleMap.set(rule.predecessor, existing);
 	}
 
 	// Build parametric rule lookup (can have multiple rules per symbol)
@@ -38,6 +66,8 @@ export function derive(symbols: Symbol[], rules: D0LRule[], parametricRules: Par
 				// Build variable bindings from symbol params
 				let matched = false;
 				
+				// Filter rules that match param count and condition
+				const matchingRules: ParametricRule[] = [];
 				for (const rule of paramRules) {
 					if (rule.params.length !== symbol.params.length) continue;
 					
@@ -50,14 +80,26 @@ export function derive(symbols: Symbol[], rules: D0LRule[], parametricRules: Par
 					if (rule.condition) {
 						try {
 							const condResult = evaluateExpression(rule.condition, vars);
-							if (!condResult) continue; // Condition not met
+							if (!condResult) continue;
 						} catch {
-							continue; // Error evaluating condition
+							continue;
 						}
 					}
 					
+					matchingRules.push(rule);
+				}
+				
+				if (matchingRules.length > 0) {
+					// Select rule (stochastically if multiple)
+					const selectedRule = selectStochasticRule(matchingRules);
+					
+					const vars: Record<string, number> = {};
+					for (let p = 0; p < selectedRule.params.length; p++) {
+						vars[selectedRule.params[p]] = symbol.params[p];
+					}
+					
 					// Apply rule - evaluate successor expressions
-					for (const succ of rule.successor) {
+					for (const succ of selectedRule.successor) {
 						const newParams: number[] = [];
 						for (const expr of succ.params) {
 							try {
@@ -72,18 +114,19 @@ export function derive(symbols: Symbol[], rules: D0LRule[], parametricRules: Par
 						});
 					}
 					matched = true;
-					break; // First matching rule wins
 				}
 				
 				if (matched) continue;
 			}
 		}
 		
-		// Try D0L rules
-		const d0lReplacement = d0lRuleMap.get(symbol.id);
-		if (d0lReplacement) {
-			for (let j = 0; j < d0lReplacement.length; j++) {
-				result.push({ id: d0lReplacement[j].id });
+		// Try D0L rules (with stochastic selection)
+		const d0lRules = d0lRuleMap.get(symbol.id);
+		if (d0lRules && d0lRules.length > 0) {
+			// Select rule (stochastically if multiple)
+			const selectedRule = selectStochasticRule(d0lRules);
+			for (let j = 0; j < selectedRule.successor.length; j++) {
+				result.push({ id: selectedRule.successor[j].id });
 			}
 			continue;
 		}

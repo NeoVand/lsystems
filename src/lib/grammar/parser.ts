@@ -104,12 +104,12 @@ function tokenize(input: string): Token[] {
 			continue;
 		}
 
-		// Expression content (anything inside parentheses that's not a simple param name)
-		// Handle operators like *, /, +, - that appear in expressions
-		if ('*/%^<>=!&|'.includes(char)) {
+		// Expression operators (only those not used as L-system symbols)
+		// Note: ^, &, /, | are L-system symbols, so they're handled below as SYMBOL
+		if ('*%<>=!'.includes(char)) {
 			// Multi-char operators
 			const twoChar = input.slice(i, i + 2);
-			if (['<=', '>=', '==', '!=', '&&', '||'].includes(twoChar)) {
+			if (['<=', '>=', '==', '!='].includes(twoChar)) {
 				tokens.push({ type: 'EXPR', value: twoChar, line, column });
 				i += 2;
 				column += 2;
@@ -121,9 +121,20 @@ function tokenize(input: string): Token[] {
 			continue;
 		}
 
-		// Plus/minus are always symbols in grammar context
-		// Expression parsing inside parens handles operators separately
-		if (char === '+' || char === '-') {
+		// Rotation/movement symbols are always symbols in grammar context
+		// +/- = yaw (turn left/right)
+		// &/^ = pitch (tilt down/up)
+		// \// = roll (roll left/right)
+		// | = turn around
+		if ('+−&^/|'.includes(char) || char === '\\') {
+			tokens.push({ type: 'SYMBOL', value: char, line, column });
+			i++;
+			column++;
+			continue;
+		}
+		
+		// Also handle regular minus
+		if (char === '-') {
 			tokens.push({ type: 'SYMBOL', value: char, line, column });
 			i++;
 			column++;
@@ -411,11 +422,21 @@ export function parseGrammar(input: string): Grammar | ParseError {
 					};
 				}
 
+				// Check for probability: (0.5) at end of rule
+				let probability: number | undefined;
+				if (tokens[i].type === 'LPAREN' && tokens[i + 1]?.type === 'NUMBER' && tokens[i + 2]?.type === 'RPAREN') {
+					i++; // skip (
+					probability = parseFloat(tokens[i].value);
+					i++; // skip number
+					i++; // skip )
+				}
+
 				parametricRules.push({
 					predecessor: predecessorToken.value,
 					params: paramNames,
 					condition,
 					successor,
+					probability,
 				});
 			} else {
 				// D0L rule
@@ -429,9 +450,19 @@ export function parseGrammar(input: string): Grammar | ParseError {
 					};
 				}
 
+				// Check for probability: (0.5) at end of rule
+				let probability: number | undefined;
+				if (tokens[i].type === 'LPAREN' && tokens[i + 1]?.type === 'NUMBER' && tokens[i + 2]?.type === 'RPAREN') {
+					i++; // skip (
+					probability = parseFloat(tokens[i].value);
+					i++; // skip number
+					i++; // skip )
+				}
+
 				rules.push({
 					predecessor: predecessorToken.value,
 					successor,
+					probability,
 				});
 			}
 
@@ -487,7 +518,8 @@ export function serializeGrammar(grammar: Grammar): string {
 	// D0L Rules
 	for (const rule of grammar.rules) {
 		const successor = rule.successor.map((s) => s.id).join('');
-		lines.push(`${rule.predecessor} -> ${successor}`);
+		const prob = rule.probability !== undefined && rule.probability !== 1 ? ` (${rule.probability})` : '';
+		lines.push(`${rule.predecessor} -> ${successor}${prob}`);
 	}
 
 	// Parametric Rules
@@ -500,7 +532,8 @@ export function serializeGrammar(grammar: Grammar): string {
 			}
 			return s.symbol;
 		}).join('');
-		lines.push(`${rule.predecessor}${params}${condition} -> ${successor}`);
+		const prob = rule.probability !== undefined && rule.probability !== 1 ? ` (${rule.probability})` : '';
+		lines.push(`${rule.predecessor}${params}${condition} -> ${successor}${prob}`);
 	}
 
 	return lines.join('\n');
