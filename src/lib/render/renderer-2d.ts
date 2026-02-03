@@ -214,6 +214,33 @@ export class Renderer2D {
 	}
 
 	/**
+	 * Update vertex buffer directly from pre-formatted Float32Array
+	 * This is the fast path - skips all intermediate conversions
+	 * 
+	 * @param vertexData Pre-formatted array: [x1, y1, r, g, b, a, x2, y2, r, g, b, a, ...]
+	 * @param vertexCount Number of vertices (2 per line segment)
+	 */
+	updateVertexBuffer(vertexData: Float32Array, vertexCount: number): void {
+		const { device } = this.ctx;
+		
+		const bytesNeeded = vertexCount * 6 * 4; // 6 floats per vertex, 4 bytes per float
+		
+		// Recreate GPU buffer if needed
+		if (!this.vertexBuffer || this.vertexBuffer.size < bytesNeeded) {
+			this.vertexBuffer?.destroy();
+			this.vertexBuffer = device.createBuffer({
+				label: 'Vertex Buffer',
+				size: Math.max(bytesNeeded, bytesNeeded * 1.5),
+				usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+			});
+		}
+
+		// Direct upload - no intermediate processing
+		device.queue.writeBuffer(this.vertexBuffer, 0, vertexData.buffer, 0, bytesNeeded);
+		this.vertexCount = vertexCount;
+	}
+
+	/**
 	 * Update uniform values
 	 */
 	updateUniforms(uniforms: Uniforms): void {

@@ -3,7 +3,7 @@
 	import { initWebGPU, isWebGPUSupported, type GPUContext } from '../gpu/device';
 	import { Renderer2D, hexToRgba } from '../render/renderer-2d';
 	import type { LineSegment } from '../gpu/types';
-	import { initGPUDerivationStore, destroyGPUDerivationStore } from '../stores/lsystem.svelte';
+	import { initGPUDerivationStore, destroyGPUDerivationStore, computeVertexBuffer, lsystemParams, visualState } from '../stores/lsystem.svelte';
 
 	interface Props {
 		segments: LineSegment[];
@@ -29,9 +29,12 @@
 	let lastMouseX = 0;
 	let lastMouseY = 0;
 	
-	// Track if segments have been uploaded
+	// Track uploaded state
 	let uploadedSegmentCount = 0;
-	let lastSegmentsRef: LineSegment[] | null = null;
+	let lastVertexCount = 0;
+	
+	// Use fast path flag
+	const USE_FAST_PATH = true;
 
 	function renderFrame() {
 		if (!renderer || !isInitialized) return;
@@ -63,19 +66,38 @@
 		device.queue.submit([commandEncoder.finish()]);
 	}
 
-	// Upload segments only when they change
+	// Fast path: compute vertex buffer directly without intermediate objects
 	$effect(() => {
-		const currentSegments = segments;
+		if (!renderer || !isInitialized || visualState.is3D) return;
 		
-		if (!renderer || !isInitialized) return;
+		// Track dependencies for recomputation
+		void lsystemParams.axiom;
+		void lsystemParams.rules;
+		void lsystemParams.iterations;
+		void lsystemParams.angle;
+		void visualState.colorMode;
+		void visualState.hueOffset;
+		void visualState.saturation;
+		void visualState.lightness;
+		void visualState.lineColor;
 		
-		// Check if segments actually changed
-		if (currentSegments !== lastSegmentsRef || currentSegments.length !== uploadedSegmentCount) {
-			if (currentSegments.length > 0) {
-				renderer.updateSegments(currentSegments);
+		if (USE_FAST_PATH) {
+			// Ultra-fast path: direct vertex buffer output
+			const result = computeVertexBuffer();
+			if (result && (result.changed || result.vertexCount !== lastVertexCount)) {
+				renderer.updateVertexBuffer(result.vertexData, result.vertexCount);
+				lastVertexCount = result.vertexCount;
+				uploadedSegmentCount = result.segmentCount;
+				// Immediately render after upload
+				renderFrame();
 			}
-			lastSegmentsRef = currentSegments;
-			uploadedSegmentCount = currentSegments.length;
+		} else {
+			// Legacy path: use segments prop
+			if (segments.length > 0 && segments.length !== uploadedSegmentCount) {
+				renderer.updateSegments(segments);
+				uploadedSegmentCount = segments.length;
+				renderFrame();
+			}
 		}
 	});
 
@@ -88,7 +110,7 @@
 		void offsetX;
 		void offsetY;
 		
-		if (isInitialized && segments.length > 0) {
+		if (isInitialized && uploadedSegmentCount > 0) {
 			renderFrame();
 		} else if (isInitialized) {
 			clearCanvas();

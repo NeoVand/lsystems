@@ -6,7 +6,7 @@
 	} from '../stores/lsystem.svelte';
 
 	let safeMax = $derived(getSafeMaxIterations());
-	let maxIterations = $derived(Math.min(safeMax + 5, 20));
+	let maxIterations = $derived(Math.min(safeMax + 5, 30));
 </script>
 
 <div class="space-y-5">

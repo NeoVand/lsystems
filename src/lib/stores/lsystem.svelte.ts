@@ -8,7 +8,9 @@ import type { LineSegment } from '../gpu/types';
 import type { Preset } from '../presets/examples';
 import { deriveN, getGenerationStats, calculateSafeGenerations } from '../derivation/derive';
 import { interpretSymbols, normalizeSegments, type TurtleConfig } from '../turtle/cpu-turtle';
+import { interpretFast, interpretToVertexBuffer, hexToRgbArray, type FastTurtleConfig, type ColorMode as FastColorMode } from '../turtle/fast-turtle';
 import { interpretSymbols3D, normalizeSegments3D, type Segment3D } from '../turtle/turtle-3d';
+import { interpretFast3D, interpretToVertexBuffer3D, type FastTurtle3DConfig, type ColorMode3D } from '../turtle/fast-turtle-3d';
 import { parseGrammar, isParseError, serializeGrammar } from '../grammar/parser';
 import { plant1, allPresets } from '../presets/examples';
 import type { GPUDerivationContext } from '../derivation/gpu-derive';
@@ -153,7 +155,7 @@ export function getCurrentGrammarPure(): Grammar | null {
  * Uses CPU derivation (GPU derivation available via computeSegmentsAsync)
  */
 function deriveSymbols(): Symbol[] {
-	const grammar = getCurrentGrammar();
+	const grammar = getCurrentGrammarPure();
 	if (!grammar) return [];
 
 	const grammarStr = serializeGrammar(grammar);
@@ -298,41 +300,42 @@ function applyColors(segments: LineSegment[]): void {
 }
 
 /**
- * Interpret symbols to segments (cached - only recomputes when angle changes)
+ * Interpret symbols to segments (cached - only recomputes when needed)
+ * Uses optimized fast turtle with fused normalization and coloring
  */
 function interpretToSegments(symbols: Symbol[]): LineSegment[] {
 	if (symbols.length === 0) return [];
 	
-	const needsReinterpret = lsystemParams.angle !== cachedAngle || cachedSegments.length === 0;
-	const needsRecolor = needsReinterpret ||
+	// Check if anything changed that requires re-interpretation
+	const needsRecompute = 
+		lsystemParams.angle !== cachedAngle || 
+		cachedSegments.length === 0 ||
 		visualState.colorMode !== cachedColorMode ||
 		visualState.hueOffset !== cachedHueOffset ||
 		visualState.saturation !== cachedSaturation ||
 		visualState.lightness !== cachedLightness ||
 		visualState.lineColor !== cachedLineColor;
 	
-	if (!needsReinterpret && !needsRecolor) {
+	if (!needsRecompute) {
 		return cachedSegments;
 	}
 
 	const startTime = performance.now();
 
-	if (needsReinterpret) {
-		// Need to re-interpret
-		const config: TurtleConfig = {
-			angle: lsystemParams.angle,
-			stepSize: 10, // Fixed step size - gets normalized anyway
-		};
+	// Use fast turtle with fused normalization + coloring (single pass)
+	const config: FastTurtleConfig = {
+		angle: lsystemParams.angle,
+		colorMode: visualState.colorMode as FastColorMode,
+		hueOffset: visualState.hueOffset,
+		saturation: visualState.saturation,
+		lightness: visualState.lightness,
+		uniformColor: hexToRgbArray(visualState.lineColor),
+	};
 
-		const segments = interpretSymbols(symbols, config);
-		cachedSegments = normalizeSegments(segments, 1.8);
-		cachedAngle = lsystemParams.angle;
-	}
+	cachedSegments = interpretFast(symbols, config);
 	
-	// Apply colors
-	applyColors(cachedSegments);
-	
-	// Update color cache
+	// Update all caches
+	cachedAngle = lsystemParams.angle;
 	cachedColorMode = visualState.colorMode;
 	cachedHueOffset = visualState.hueOffset;
 	cachedSaturation = visualState.saturation;
@@ -354,6 +357,107 @@ export function computeSegments(): LineSegment[] {
 	return interpretToSegments(symbols);
 }
 
+/** Cached vertex buffer state */
+let cachedVertexData: Float32Array | null = null;
+let cachedVertexCount = 0;
+let cachedVertexAngle = -1;
+let cachedVertexSymbolCount = -1;
+let cachedVertexGrammarStr = '';
+let cachedVertexIterations = -1;
+let cachedVertexColorMode: ColorMode = 'depth';
+let cachedVertexHueOffset = 0;
+let cachedVertexSaturation = 0.7;
+let cachedVertexLightness = 0.5;
+let cachedVertexLineColor = '#4ade80';
+
+/**
+ * Ultra-fast path: compute directly to GPU vertex format
+ * Returns null if nothing changed (use cached data)
+ */
+export function computeVertexBuffer(): { 
+	vertexData: Float32Array; 
+	vertexCount: number; 
+	segmentCount: number;
+	changed: boolean;
+} | null {
+	const symbols = deriveSymbols();
+	if (symbols.length === 0) return null;
+	
+	// Get current grammar string for comparison
+	const grammar = getCurrentGrammarPure();
+	const grammarStr = grammar ? serializeGrammar(grammar) : '';
+	
+	// Check if anything changed - including symbols (grammar, iterations)
+	const symbolsChanged = 
+		symbols.length !== cachedVertexSymbolCount ||
+		grammarStr !== cachedVertexGrammarStr ||
+		lsystemParams.iterations !== cachedVertexIterations;
+	
+	const needsRecompute = 
+		symbolsChanged ||
+		lsystemParams.angle !== cachedVertexAngle || 
+		cachedVertexData === null ||
+		visualState.colorMode !== cachedVertexColorMode ||
+		visualState.hueOffset !== cachedVertexHueOffset ||
+		visualState.saturation !== cachedVertexSaturation ||
+		visualState.lightness !== cachedVertexLightness ||
+		visualState.lineColor !== cachedVertexLineColor;
+	
+	if (!needsRecompute && cachedVertexData) {
+		return {
+			vertexData: cachedVertexData,
+			vertexCount: cachedVertexCount,
+			segmentCount: cachedVertexCount / 2,
+			changed: false,
+		};
+	}
+
+	const startTime = performance.now();
+
+	const config: FastTurtleConfig = {
+		angle: lsystemParams.angle,
+		colorMode: visualState.colorMode as FastColorMode,
+		hueOffset: visualState.hueOffset,
+		saturation: visualState.saturation,
+		lightness: visualState.lightness,
+		uniformColor: hexToRgbArray(visualState.lineColor),
+	};
+
+	const result = interpretToVertexBuffer(symbols, config);
+	
+	if (!result) return null;
+	
+	// Update caches
+	cachedVertexData = result.vertexData;
+	cachedVertexCount = result.vertexCount;
+	cachedVertexSymbolCount = symbols.length;
+	cachedVertexGrammarStr = grammarStr;
+	cachedVertexIterations = lsystemParams.iterations;
+	cachedVertexAngle = lsystemParams.angle;
+	cachedVertexColorMode = visualState.colorMode;
+	cachedVertexHueOffset = visualState.hueOffset;
+	cachedVertexSaturation = visualState.saturation;
+	cachedVertexLightness = visualState.lightness;
+	cachedVertexLineColor = visualState.lineColor;
+	
+	// Also update standard caches for compatibility
+	cachedAngle = lsystemParams.angle;
+	cachedColorMode = visualState.colorMode;
+	cachedHueOffset = visualState.hueOffset;
+	cachedSaturation = visualState.saturation;
+	cachedLightness = visualState.lightness;
+	cachedLineColor = visualState.lineColor;
+	
+	engineState.segmentCount = result.segmentCount;
+	engineState.lastInterpretTime = performance.now() - startTime;
+	engineState.gpuTurtleActive = false;
+
+	return {
+		...result,
+		changed: true,
+	};
+}
+
 // ============ 3D Support ============
 
 let cached3DSegments: Segment3D[] = [];
@@ -367,77 +471,6 @@ let cached3DLightness = 0.5;
 let cached3DLineColor = '#4ade80';
 
 /**
- * Apply colors to 3D segments based on visual settings
- */
-function applyColors3D(segments: Segment3D[]): void {
-	if (segments.length === 0) return;
-
-	const { colorMode, hueOffset, saturation, lightness, lineColor } = visualState;
-	
-	// Find max values for normalization
-	let maxDepth = 0;
-	let maxBranchId = 0;
-	let minX = Infinity, maxX = -Infinity;
-	let minY = Infinity, maxY = -Infinity;
-	let minZ = Infinity, maxZ = -Infinity;
-	
-	for (const seg of segments) {
-		maxDepth = Math.max(maxDepth, seg.depth);
-		maxBranchId = Math.max(maxBranchId, seg.branchId);
-		minX = Math.min(minX, seg.start[0], seg.end[0]);
-		maxX = Math.max(maxX, seg.start[0], seg.end[0]);
-		minY = Math.min(minY, seg.start[1], seg.end[1]);
-		maxY = Math.max(maxY, seg.start[1], seg.end[1]);
-		minZ = Math.min(minZ, seg.start[2], seg.end[2]);
-		maxZ = Math.max(maxZ, seg.start[2], seg.end[2]);
-	}
-	
-	const rangeX = maxX - minX || 1;
-	const rangeY = maxY - minY || 1;
-	const rangeZ = maxZ - minZ || 1;
-	const maxRange = Math.max(rangeX, rangeY, rangeZ);
-
-	for (let i = 0; i < segments.length; i++) {
-		const seg = segments[i];
-		let hue: number;
-
-		switch (colorMode) {
-			case 'depth':
-				hue = (seg.depth * 60 + hueOffset) % 360;
-				break;
-			
-			case 'branch':
-				hue = ((seg.branchId * 137.5) + hueOffset) % 360;
-				break;
-			
-			case 'position':
-				// 3D position-based color using distance from center
-				const cx = (seg.start[0] + seg.end[0]) / 2;
-				const cy = (seg.start[1] + seg.end[1]) / 2;
-				const cz = (seg.start[2] + seg.end[2]) / 2;
-				const dist = Math.sqrt(cx*cx + cy*cy + cz*cz);
-				hue = ((dist / (maxRange * 0.5)) * 180 + hueOffset) % 360;
-				break;
-			
-			case 'age':
-				hue = ((i / segments.length) * 360 + hueOffset) % 360;
-				break;
-			
-			case 'uniform':
-				const rgb = hexToRgb(lineColor);
-				seg.color = [rgb[0], rgb[1], rgb[2], 1.0];
-				continue;
-			
-			default:
-				hue = hueOffset;
-		}
-
-		const rgb = hslToRgb(hue, saturation, lightness);
-		seg.color = [rgb[0], rgb[1], rgb[2], 1.0];
-	}
-}
-
-/**
  * Compute 3D segments from current state
  */
 export function computeSegments3D(): Segment3D[] {
@@ -446,41 +479,38 @@ export function computeSegments3D(): Segment3D[] {
 	
 	const grammarStr = serializeGrammar(getCurrentGrammarPure()!);
 	
-	// Check if we need to reinterpret (grammar, iterations, or angle changed)
-	const needsReinterpret = 
+	// Check if anything changed
+	const needsRecompute = 
 		grammarStr !== cached3DGrammarStr ||
 		lsystemParams.iterations !== cached3DIterations ||
 		lsystemParams.angle !== cached3DAngle ||
-		cached3DSegments.length === 0;
-	
-	// Check if we need to recolor
-	const needsRecolor = needsReinterpret ||
+		cached3DSegments.length === 0 ||
 		visualState.colorMode !== cached3DColorMode ||
 		visualState.hueOffset !== cached3DHueOffset ||
 		visualState.saturation !== cached3DSaturation ||
 		visualState.lightness !== cached3DLightness ||
 		visualState.lineColor !== cached3DLineColor;
 	
-	if (!needsReinterpret && !needsRecolor) {
+	if (!needsRecompute) {
 		return cached3DSegments;
 	}
 	
 	const startTime = performance.now();
 	
-	if (needsReinterpret) {
-		const segments = interpretSymbols3D(symbols, {
-			angle: lsystemParams.angle,
-			stepSize: 10,
-		});
-		
-		cached3DSegments = normalizeSegments3D(segments, 1.8);
-		cached3DGrammarStr = grammarStr;
-		cached3DIterations = lsystemParams.iterations;
-		cached3DAngle = lsystemParams.angle;
-	}
+	// Use fast 3D turtle with fused normalization + coloring
+	const config: FastTurtle3DConfig = {
+		angle: lsystemParams.angle,
+		colorMode: visualState.colorMode as ColorMode3D,
+		hueOffset: visualState.hueOffset,
+		saturation: visualState.saturation,
+		lightness: visualState.lightness,
+		uniformColor: hexToRgbArray(visualState.lineColor),
+	};
 	
-	// Apply colors based on visual settings
-	applyColors3D(cached3DSegments);
+	cached3DSegments = interpretFast3D(symbols, config);
+	cached3DGrammarStr = grammarStr;
+	cached3DIterations = lsystemParams.iterations;
+	cached3DAngle = lsystemParams.angle;
 	
 	// Update color cache
 	cached3DColorMode = visualState.colorMode;
@@ -495,6 +525,96 @@ export function computeSegments3D(): Segment3D[] {
 	// Return a new array reference so Canvas3D detects the change
 	// (colors are modified in place, so we need a new reference to trigger re-upload)
 	return [...cached3DSegments];
+}
+
+/** Cached 3D vertex buffer state */
+let cached3DVertexData: Float32Array | null = null;
+let cached3DVertexCount = 0;
+let cached3DVertexSymbolCount = -1;
+let cached3DVertexGrammarStr = '';
+let cached3DVertexIterations = -1;
+let cached3DVertexAngle = -1;
+let cached3DVertexColorMode: ColorMode = 'depth';
+let cached3DVertexHueOffset = 0;
+let cached3DVertexSaturation = 0.7;
+let cached3DVertexLightness = 0.5;
+let cached3DVertexLineColor = '#4ade80';
+
+/**
+ * Ultra-fast 3D path: compute directly to GPU vertex format
+ */
+export function computeVertexBuffer3D(): { 
+	vertexData: Float32Array; 
+	vertexCount: number; 
+	segmentCount: number;
+	changed: boolean;
+} | null {
+	const symbols = deriveSymbols();
+	if (symbols.length === 0) return null;
+	
+	const grammar = getCurrentGrammarPure();
+	const grammarStr = grammar ? serializeGrammar(grammar) : '';
+	
+	// Check if anything changed
+	const symbolsChanged = 
+		symbols.length !== cached3DVertexSymbolCount ||
+		grammarStr !== cached3DVertexGrammarStr ||
+		lsystemParams.iterations !== cached3DVertexIterations;
+	
+	const needsRecompute = 
+		symbolsChanged ||
+		lsystemParams.angle !== cached3DVertexAngle || 
+		cached3DVertexData === null ||
+		visualState.colorMode !== cached3DVertexColorMode ||
+		visualState.hueOffset !== cached3DVertexHueOffset ||
+		visualState.saturation !== cached3DVertexSaturation ||
+		visualState.lightness !== cached3DVertexLightness ||
+		visualState.lineColor !== cached3DVertexLineColor;
+	
+	if (!needsRecompute && cached3DVertexData) {
+		return {
+			vertexData: cached3DVertexData,
+			vertexCount: cached3DVertexCount,
+			segmentCount: cached3DVertexCount / 2,
+			changed: false,
+		};
+	}
+
+	const startTime = performance.now();
+
+	const config: FastTurtle3DConfig = {
+		angle: lsystemParams.angle,
+		colorMode: visualState.colorMode as ColorMode3D,
+		hueOffset: visualState.hueOffset,
+		saturation: visualState.saturation,
+		lightness: visualState.lightness,
+		uniformColor: hexToRgbArray(visualState.lineColor),
+	};
+
+	const result = interpretToVertexBuffer3D(symbols, config);
+	
+	if (!result) return null;
+	
+	// Update caches
+	cached3DVertexData = result.vertexData;
+	cached3DVertexCount = result.vertexCount;
+	cached3DVertexSymbolCount = symbols.length;
+	cached3DVertexGrammarStr = grammarStr;
+	cached3DVertexIterations = lsystemParams.iterations;
+	cached3DVertexAngle = lsystemParams.angle;
+	cached3DVertexColorMode = visualState.colorMode;
+	cached3DVertexHueOffset = visualState.hueOffset;
+	cached3DVertexSaturation = visualState.saturation;
+	cached3DVertexLightness = visualState.lightness;
+	cached3DVertexLineColor = visualState.lineColor;
+	
+	engineState.segmentCount = result.segmentCount;
+	engineState.lastInterpretTime = performance.now() - startTime;
+
+	return {
+		...result,
+		changed: true,
+	};
 }
 
 /**
@@ -618,7 +738,7 @@ export function regenerate(): void {
  */
 export function setIterations(n: number): void {
 	const safeMax = getSafeMaxIterations();
-	lsystemParams.iterations = Math.max(0, Math.min(n, safeMax + 2)); // Allow slight overrun with warning
+	lsystemParams.iterations = Math.max(0, Math.min(n, safeMax + 5)); // Allow overrun with warning
 }
 
 /**

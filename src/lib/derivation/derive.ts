@@ -193,7 +193,7 @@ export function estimateGrowthRate(grammar: Grammar): number {
  */
 export function calculateSafeGenerations(
 	grammar: Grammar,
-	maxSymbols: number = 4_000_000
+	maxSymbols: number = 8_000_000
 ): number {
 	const growthRate = estimateGrowthRate(grammar);
 	const axiomLength = grammar.axiom.length;
@@ -205,7 +205,7 @@ export function calculateSafeGenerations(
 	// n = log(maxSymbols / axiomLength) / log(growthRate)
 	const safeGen = Math.floor(Math.log(maxSymbols / axiomLength) / Math.log(growthRate));
 
-	return Math.max(1, Math.min(safeGen, 20)); // Clamp to reasonable range
+	return Math.max(1, Math.min(safeGen, 30)); // Allow higher iterations with fast turtle
 }
 
 /**

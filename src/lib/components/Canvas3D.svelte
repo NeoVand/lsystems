@@ -3,7 +3,7 @@
 	import { initWebGPU } from '../gpu/device';
 	import { Renderer3D, type CameraState } from '../render/renderer-3d';
 	import type { Segment3D } from '../turtle/turtle-3d';
-	import { engineState } from '../stores/lsystem.svelte';
+	import { engineState, lsystemParams, visualState, computeVertexBuffer3D } from '../stores/lsystem.svelte';
 
 	interface Props {
 		segments: Segment3D[];
@@ -37,7 +37,7 @@
 
 	// Track segments for upload
 	let uploadedSegmentCount = 0;
-	let lastSegmentsRef: Segment3D[] | null = null;
+	let lastComputedSegments: Segment3D[] = [];
 
 	function hexToRgba(hex: string): [number, number, number, number] {
 		const r = parseInt(hex.slice(1, 3), 16) / 255;
@@ -128,24 +128,34 @@
 		};
 	});
 
-	// Upload segments when they change
+	// Track vertex count for change detection
+	let lastVertexCount = 0;
+
+	// Ultra-fast path: direct vertex buffer output (same as 2D Canvas)
 	$effect(() => {
-		// Track these dependencies explicitly
-		const currentSegments = segments;
-		const segmentLength = segments.length;
+		// Must explicitly track isInitialized so effect re-runs when initialization completes
 		const initialized = isInitialized;
 		const currentRenderer = renderer;
 		
 		if (!currentRenderer || !initialized) return;
-
-		// Always upload if array reference changed OR length changed
-		// This handles iteration changes, angle changes, color changes, etc.
-		if (currentSegments !== lastSegmentsRef || segmentLength !== uploadedSegmentCount) {
-			if (segmentLength > 0) {
-				currentRenderer.updateSegments(currentSegments);
-			}
-			lastSegmentsRef = currentSegments;
-			uploadedSegmentCount = segmentLength;
+		
+		// Track dependencies for recomputation
+		void lsystemParams.axiom;
+		void lsystemParams.rules;
+		void lsystemParams.iterations;
+		void lsystemParams.angle;
+		void visualState.colorMode;
+		void visualState.hueOffset;
+		void visualState.saturation;
+		void visualState.lightness;
+		void visualState.lineColor;
+		
+		// Compute directly to vertex buffer (skips intermediate Segment3D[] array)
+		const result = computeVertexBuffer3D();
+		if (result && result.vertexCount > 0) {
+			currentRenderer.updateVertexBuffer(result.vertexData, result.vertexCount);
+			lastVertexCount = result.vertexCount;
+			uploadedSegmentCount = result.segmentCount;
 		}
 	});
 

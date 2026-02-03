@@ -170,32 +170,43 @@ export class Renderer3D {
 		this.lastHeight = height;
 	}
 
+	// Reusable vertex data buffer
+	private vertexDataBuffer: Float32Array | null = null;
+
 	updateSegments(segments: Segment3D[]): void {
 		const { device } = this.ctx;
 		const floatsPerVertex = 7; // 3 pos + 4 color
 		const floatsNeeded = segments.length * 2 * floatsPerVertex;
 
-		const vertexData = new Float32Array(floatsNeeded);
+		// Reuse or grow the vertex data buffer
+		if (!this.vertexDataBuffer || this.vertexDataBuffer.length < floatsNeeded) {
+			this.vertexDataBuffer = new Float32Array(Math.max(floatsNeeded, floatsNeeded * 1.5));
+		}
+
+		const vertexData = this.vertexDataBuffer;
 		let offset = 0;
 
-		for (const seg of segments) {
+		for (let i = 0; i < segments.length; i++) {
+			const seg = segments[i];
 			// Start vertex
-			vertexData[offset++] = seg.start[0];
-			vertexData[offset++] = seg.start[1];
-			vertexData[offset++] = seg.start[2];
-			vertexData[offset++] = seg.color[0];
-			vertexData[offset++] = seg.color[1];
-			vertexData[offset++] = seg.color[2];
-			vertexData[offset++] = seg.color[3];
+			vertexData[offset] = seg.start[0];
+			vertexData[offset + 1] = seg.start[1];
+			vertexData[offset + 2] = seg.start[2];
+			vertexData[offset + 3] = seg.color[0];
+			vertexData[offset + 4] = seg.color[1];
+			vertexData[offset + 5] = seg.color[2];
+			vertexData[offset + 6] = seg.color[3];
 
 			// End vertex
-			vertexData[offset++] = seg.end[0];
-			vertexData[offset++] = seg.end[1];
-			vertexData[offset++] = seg.end[2];
-			vertexData[offset++] = seg.color[0];
-			vertexData[offset++] = seg.color[1];
-			vertexData[offset++] = seg.color[2];
-			vertexData[offset++] = seg.color[3];
+			vertexData[offset + 7] = seg.end[0];
+			vertexData[offset + 8] = seg.end[1];
+			vertexData[offset + 9] = seg.end[2];
+			vertexData[offset + 10] = seg.color[0];
+			vertexData[offset + 11] = seg.color[1];
+			vertexData[offset + 12] = seg.color[2];
+			vertexData[offset + 13] = seg.color[3];
+			
+			offset += 14;
 		}
 
 		const requiredSize = floatsNeeded * 4;
@@ -208,8 +219,29 @@ export class Renderer3D {
 			});
 		}
 
-		device.queue.writeBuffer(this.vertexBuffer, 0, vertexData);
+		device.queue.writeBuffer(this.vertexBuffer, 0, vertexData.buffer, 0, floatsNeeded * 4);
 		this.vertexCount = segments.length * 2;
+	}
+
+	/**
+	 * Direct vertex buffer upload - fast path
+	 */
+	updateVertexBuffer(vertexData: Float32Array, vertexCount: number): void {
+		const { device } = this.ctx;
+		
+		const bytesNeeded = vertexCount * 7 * 4; // 7 floats per vertex (3 pos + 4 color)
+		
+		if (!this.vertexBuffer || this.vertexBuffer.size < bytesNeeded) {
+			this.vertexBuffer?.destroy();
+			this.vertexBuffer = device.createBuffer({
+				label: '3D Vertex Buffer',
+				size: Math.max(bytesNeeded, bytesNeeded * 1.5),
+				usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+			});
+		}
+
+		device.queue.writeBuffer(this.vertexBuffer, 0, vertexData.buffer, 0, bytesNeeded);
+		this.vertexCount = vertexCount;
 	}
 
 	updateCamera(camera: CameraState, aspect: number): void {
