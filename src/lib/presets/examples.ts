@@ -422,7 +422,7 @@ export const bush3D: Preset = {
 	name: '3D Bush',
 	description: 'Dense 3D bush with all rotations',
 	grammar: quickGrammar('A', {
-		A: '[&FL!A]/////[&FL!A]///////[&FL!A]',
+		A: '[&FLA]/////[&FLA]///////[&FLA]',
 		F: 'S/////F',
 		S: 'FL',
 		L: '[^^F]',

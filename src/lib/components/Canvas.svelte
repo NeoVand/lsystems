@@ -3,7 +3,7 @@
 	import { initWebGPU, isWebGPUSupported, type GPUContext } from '../gpu/device';
 	import { Renderer2D, hexToRgba } from '../render/renderer-2d';
 	import type { LineSegment } from '../gpu/types';
-	import { initGPUDerivationStore, destroyGPUDerivationStore, computeVertexBuffer, lsystemParams, visualState } from '../stores/lsystem.svelte';
+	import { initGPUDerivationStore, destroyGPUDerivationStore, computeVertexBuffer, computeSegments, lsystemParams, visualState } from '../stores/lsystem.svelte';
 
 	interface Props {
 		segments: LineSegment[];
@@ -204,11 +204,13 @@
 
 	// Export as SVG
 	function exportSVG() {
-		if (segments.length === 0) return;
+		// Get fresh segments directly from the store (works with fast path)
+		const segs = computeSegments();
+		if (segs.length === 0) return;
 		
 		// Calculate bounds
 		let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-		for (const seg of segments) {
+		for (const seg of segs) {
 			minX = Math.min(minX, seg.start[0], seg.end[0]);
 			minY = Math.min(minY, seg.start[1], seg.end[1]);
 			maxX = Math.max(maxX, seg.start[0], seg.end[0]);
@@ -224,7 +226,7 @@
 		
 		// Generate SVG
 		let paths = '';
-		for (const seg of segments) {
+		for (const seg of segs) {
 			const x1 = (seg.start[0] - minX + padding) * scaleFactor;
 			const y1 = svgHeight - (seg.start[1] - minY + padding) * scaleFactor; // Flip Y
 			const x2 = (seg.end[0] - minX + padding) * scaleFactor;
@@ -237,7 +239,7 @@
 		
 		const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}">
-<rect width="100%" height="100%" fill="#0a0a0f"/>
+<rect width="100%" height="100%" fill="${backgroundColor}"/>
 ${paths}</svg>`;
 		
 		// Download

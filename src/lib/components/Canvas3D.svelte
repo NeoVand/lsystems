@@ -37,7 +37,6 @@
 
 	// Track segments for upload
 	let uploadedSegmentCount = 0;
-	let lastComputedSegments: Segment3D[] = [];
 
 	function hexToRgba(hex: string): [number, number, number, number] {
 		const r = parseInt(hex.slice(1, 3), 16) / 255;

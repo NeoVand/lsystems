@@ -14,15 +14,25 @@
 		lsystemParams,
 		loadPreset,
 		regenerate,
+		setSpectrumPreset,
+		setUseSpectrum,
+		getSpectrumPresets,
 	} from '$lib/stores/lsystem.svelte';
 	import { plant1 } from '$lib/presets/examples';
 	import type { LineSegment } from '$lib/gpu/types';
 	import type { Segment3D } from '$lib/turtle/turtle-3d';
+	import type { ColorSpectrum } from '$lib/color/spectrum';
+	import { sampleSpectrum, rgbToHex, hexToRgb, createTwoColorSpectrum } from '$lib/color/spectrum';
 
 	let segments: LineSegment[] = $state([]);
 	let segments3D: Segment3D[] = $state([]);
 	let panelOpen = $state(true);
 	let activeTab: 'preset' | 'grammar' | 'params' | 'visual' = $state('preset');
+	
+	// Color spectrum state
+	let spectrumType: 'preset' | 'two-color' = $state('preset');
+	let twoColorStart = $state('#3d2817');
+	let twoColorEnd = $state('#c5e17a');
 
 	// Recompute segments when parameters or visual settings change
 	$effect(() => {
@@ -37,6 +47,8 @@
 		void visualState.lightness;
 		void visualState.lineColor;
 		void visualState.is3D;
+		void visualState.useSpectrum;
+		void visualState.spectrumPreset;
 		
 		// Use untrack to avoid tracking state updates
 		untrack(() => {
@@ -47,6 +59,26 @@
 			}
 		});
 	});
+
+	// Generate a preview gradient CSS for a spectrum
+	function getGradientCss(spectrum: ColorSpectrum): string {
+		const stops = spectrum.stops.map(stop => {
+			const hex = rgbToHex(stop.color);
+			return `${hex} ${stop.position * 100}%`;
+		});
+		return `linear-gradient(to right, ${stops.join(', ')})`;
+	}
+	
+	// Handle two-color spectrum change
+	function updateTwoColorSpectrum() {
+		const spectrum = createTwoColorSpectrum(
+			hexToRgb(twoColorStart),
+			hexToRgb(twoColorEnd),
+			'Custom Two-Color'
+		);
+		visualState.spectrum = spectrum;
+		visualState.spectrumPreset = 'custom';
+	}
 
 	onMount(() => {
 		loadPreset(plant1);
@@ -246,53 +278,157 @@
 							</div>
 						</div>
 
-						<!-- Hue Offset -->
-						<div>
-							<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
-								<span>Hue Shift</span>
-								<span class="text-neutral-500">{visualState.hueOffset}°</span>
-							</label>
-							<input
-								type="range"
-								min="0"
-								max="360"
-								step="1"
-								bind:value={visualState.hueOffset}
-								class="w-full h-2 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-							/>
-						</div>
+						<!-- Color Spectrum (not shown for uniform mode) -->
+						{#if visualState.colorMode !== 'uniform'}
+							<!-- Spectrum/HSL Toggle -->
+							<div>
+								<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
+									<span>Coloring Method</span>
+								</label>
+								<div class="grid grid-cols-2 gap-2">
+									<button
+										onclick={() => setUseSpectrum(true)}
+										class="px-3 py-2 text-xs rounded-lg transition-colors {visualState.useSpectrum ? 'bg-emerald-600 text-white' : 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700'}"
+									>
+										Spectrum
+									</button>
+									<button
+										onclick={() => setUseSpectrum(false)}
+										class="px-3 py-2 text-xs rounded-lg transition-colors {!visualState.useSpectrum ? 'bg-emerald-600 text-white' : 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700'}"
+									>
+										HSL
+									</button>
+								</div>
+							</div>
 
-						<!-- Saturation -->
-						<div>
-							<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
-								<span>Saturation</span>
-								<span class="text-neutral-500">{Math.round(visualState.saturation * 100)}%</span>
-							</label>
-							<input
-								type="range"
-								min="0"
-								max="1"
-								step="0.05"
-								bind:value={visualState.saturation}
-								class="w-full h-2 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-							/>
-						</div>
+							{#if visualState.useSpectrum}
+								<!-- Spectrum Type -->
+								<div>
+									<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
+										<span>Spectrum Type</span>
+									</label>
+									<div class="grid grid-cols-2 gap-2">
+										<button
+											onclick={() => { spectrumType = 'preset'; }}
+											class="px-3 py-2 text-xs rounded-lg transition-colors {spectrumType === 'preset' ? 'bg-emerald-600 text-white' : 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700'}"
+										>
+											Presets
+										</button>
+										<button
+											onclick={() => { spectrumType = 'two-color'; updateTwoColorSpectrum(); }}
+											class="px-3 py-2 text-xs rounded-lg transition-colors {spectrumType === 'two-color' ? 'bg-emerald-600 text-white' : 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700'}"
+										>
+											Two-Color
+										</button>
+									</div>
+								</div>
 
-						<!-- Lightness -->
-						<div>
-							<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
-								<span>Lightness</span>
-								<span class="text-neutral-500">{Math.round(visualState.lightness * 100)}%</span>
-							</label>
-							<input
-								type="range"
-								min="0.1"
-								max="0.9"
-								step="0.05"
-								bind:value={visualState.lightness}
-								class="w-full h-2 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-							/>
-						</div>
+								{#if spectrumType === 'preset'}
+									<!-- Preset Grid -->
+									<div>
+										<label class="block text-sm text-neutral-400 mb-2">Color Palette</label>
+										<div class="grid grid-cols-3 gap-2">
+											{#each getSpectrumPresets() as preset}
+												<button
+													onclick={() => setSpectrumPreset(preset.name || '')}
+													class="group relative h-10 rounded-lg overflow-hidden border-2 transition-all {visualState.spectrumPreset === preset.name ? 'border-emerald-500 ring-1 ring-emerald-500' : 'border-transparent hover:border-neutral-600'}"
+													title={preset.name}
+												>
+													<div
+														class="absolute inset-0"
+														style="background: {getGradientCss(preset)}"
+													></div>
+													<div class="absolute inset-x-0 bottom-0 bg-black/60 text-[9px] text-neutral-300 py-0.5 text-center truncate opacity-0 group-hover:opacity-100 transition-opacity">
+														{preset.name}
+													</div>
+												</button>
+											{/each}
+										</div>
+									</div>
+								{:else}
+									<!-- Two Color Pickers -->
+									<div>
+										<label class="block text-sm text-neutral-400 mb-2">Start & End Colors</label>
+										<div class="flex items-center gap-3">
+											<input
+												type="color"
+												bind:value={twoColorStart}
+												onchange={updateTwoColorSpectrum}
+												class="w-12 h-10 rounded cursor-pointer bg-transparent border border-neutral-700"
+											/>
+											<div class="flex-1 h-6 rounded" style="background: linear-gradient(to right, {twoColorStart}, {twoColorEnd})"></div>
+											<input
+												type="color"
+												bind:value={twoColorEnd}
+												onchange={updateTwoColorSpectrum}
+												class="w-12 h-10 rounded cursor-pointer bg-transparent border border-neutral-700"
+											/>
+										</div>
+									</div>
+								{/if}
+
+								<!-- Current Spectrum Preview -->
+								<div>
+									<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
+										<span>Active Spectrum</span>
+										<span class="text-neutral-500 text-xs">{visualState.spectrumPreset}</span>
+									</label>
+									<div
+										class="h-4 rounded-lg border border-neutral-700"
+										style="background: {getGradientCss(visualState.spectrum)}"
+									></div>
+								</div>
+							{:else}
+								<!-- Legacy HSL Controls -->
+								<!-- Hue Offset -->
+								<div>
+									<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
+										<span>Hue Shift</span>
+										<span class="text-neutral-500">{visualState.hueOffset}°</span>
+									</label>
+									<input
+										type="range"
+										min="0"
+										max="360"
+										step="1"
+										bind:value={visualState.hueOffset}
+										class="w-full h-2 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+									/>
+								</div>
+
+								<!-- Saturation -->
+								<div>
+									<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
+										<span>Saturation</span>
+										<span class="text-neutral-500">{Math.round(visualState.saturation * 100)}%</span>
+									</label>
+									<input
+										type="range"
+										min="0"
+										max="1"
+										step="0.05"
+										bind:value={visualState.saturation}
+										class="w-full h-2 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+									/>
+								</div>
+
+								<!-- Lightness -->
+								<div>
+									<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
+										<span>Lightness</span>
+										<span class="text-neutral-500">{Math.round(visualState.lightness * 100)}%</span>
+									</label>
+									<input
+										type="range"
+										min="0.1"
+										max="0.9"
+										step="0.05"
+										bind:value={visualState.lightness}
+										class="w-full h-2 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+									/>
+								</div>
+							{/if}
+						{/if}
 
 						<!-- Uniform Color (only shown when uniform mode) -->
 						{#if visualState.colorMode === 'uniform'}

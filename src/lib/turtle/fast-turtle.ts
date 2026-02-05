@@ -12,6 +12,8 @@
 
 import type { Symbol } from '../grammar/types';
 import type { LineSegment } from '../gpu/types';
+import type { ColorSpectrum } from '../color/spectrum';
+import { sampleSpectrum } from '../color/spectrum';
 
 /** Color mode options */
 export type ColorMode = 'depth' | 'branch' | 'position' | 'age' | 'uniform';
@@ -24,6 +26,9 @@ export interface FastTurtleConfig {
 	saturation: number;
 	lightness: number;
 	uniformColor: [number, number, number]; // RGB 0-1
+	// Spectrum coloring
+	useSpectrum?: boolean; // If true, use spectrum instead of HSL
+	spectrum?: ColorSpectrum; // The color spectrum to use
 }
 
 // Pre-allocated buffers for reuse across calls
@@ -127,7 +132,7 @@ export function interpretFast(
 	let drawCount = 0;
 	for (let i = 0; i < symbols.length; i++) {
 		const c = symbols[i].id;
-		if (c === 'F' || c === 'G') drawCount++;
+		if (c === 'F' || c === 'G' || c === 'A' || c === 'B') drawCount++;
 	}
 	
 	if (drawCount === 0) return [];
@@ -168,12 +173,16 @@ export function interpretFast(
 		
 		switch (cmd) {
 			case 'F':
-			case 'G': {
+			case 'G':
+			case 'A':
+			case 'B': {
+				// Use parameter as step size if provided, otherwise use default
+				const step = (sym.params && sym.params.length > 0) ? sym.params[0] : stepSize;
 				// Use precise math for accuracy (LUT can be used if needed)
 				const cosA = Math.cos(angle);
 				const sinA = Math.sin(angle);
-				const newX = x + cosA * stepSize;
-				const newY = y + sinA * stepSize;
+				const newX = x + cosA * step;
+				const newY = y + sinA * step;
 				
 				// Store segment (reuse pre-allocated object)
 				const seg = segmentBuffer![segIdx];
@@ -202,8 +211,9 @@ export function interpretFast(
 			
 			case 'f':
 			case 'g': {
-				x += Math.cos(angle) * stepSize;
-				y += Math.sin(angle) * stepSize;
+				const step = (sym.params && sym.params.length > 0) ? sym.params[0] : stepSize;
+				x += Math.cos(angle) * step;
+				y += Math.sin(angle) * step;
 				break;
 			}
 			
@@ -291,7 +301,7 @@ export function interpretFast(
 	const rangeY = maxY - minY || 1;
 	
 	// Fused normalization + coloring pass
-	const { colorMode, hueOffset, saturation, lightness, uniformColor } = config;
+	const { colorMode, hueOffset, saturation, lightness, uniformColor, useSpectrum, spectrum } = config;
 	
 	for (let i = 0; i < segIdx; i++) {
 		const seg = segmentBuffer![i];
@@ -302,41 +312,55 @@ export function interpretFast(
 		seg.end[0] = (seg.end[0] - centerX) * scale;
 		seg.end[1] = (seg.end[1] - centerY) * scale;
 		
-		// Apply color based on mode
-		let hue: number;
+		// Handle uniform color mode
+		if (colorMode === 'uniform') {
+			seg.color[0] = uniformColor[0];
+			seg.color[1] = uniformColor[1];
+			seg.color[2] = uniformColor[2];
+			seg.color[3] = 1.0;
+			continue;
+		}
+		
+		// Calculate normalized value t (0-1) based on color mode
+		let t: number;
 		
 		switch (colorMode) {
 			case 'depth':
-				hue = (seg.depth * 60 + hueOffset) % 360;
+				t = maxDepth > 0 ? seg.depth / maxDepth : 0;
 				break;
 			
 			case 'branch':
-				hue = ((seg.branchId * 137.5) + hueOffset) % 360;
+				t = maxBranchId > 0 ? (seg.branchId % 100) / 100 : 0;
 				break;
 			
 			case 'position': {
 				const cx = (seg.start[0] + seg.end[0]) / 2;
 				const cy = (seg.start[1] + seg.end[1]) / 2;
-				hue = (Math.atan2(cy, cx) * 180 / PI + 180 + hueOffset) % 360;
+				// Normalize position to 0-1 using angle
+				t = (Math.atan2(cy, cx) / PI + 1) / 2;
 				break;
 			}
 			
 			case 'age':
-				hue = ((i / segIdx) * 360 + hueOffset) % 360;
+				t = i / segIdx;
 				break;
 			
-			case 'uniform':
-				seg.color[0] = uniformColor[0];
-				seg.color[1] = uniformColor[1];
-				seg.color[2] = uniformColor[2];
-				seg.color[3] = 1.0;
-				continue;
-			
 			default:
-				hue = hueOffset;
+				t = 0;
 		}
 		
-		const rgb = hslToRgb(hue, saturation, lightness);
+		// Apply color
+		let rgb: [number, number, number];
+		
+		if (useSpectrum && spectrum) {
+			// Use spectrum coloring
+			rgb = sampleSpectrum(spectrum, t);
+		} else {
+			// Legacy HSL coloring
+			const hue = (t * 360 + hueOffset) % 360;
+			rgb = hslToRgb(hue, saturation, lightness);
+		}
+		
 		seg.color[0] = rgb[0];
 		seg.color[1] = rgb[1];
 		seg.color[2] = rgb[2];
@@ -381,7 +405,7 @@ export function interpretToVertexBuffer(
 	let drawCount = 0;
 	for (let i = 0; i < symbols.length; i++) {
 		const c = symbols[i].id;
-		if (c === 'F' || c === 'G') drawCount++;
+		if (c === 'F' || c === 'G' || c === 'A' || c === 'B') drawCount++;
 	}
 	
 	if (drawCount === 0) return null;
@@ -434,11 +458,15 @@ export function interpretToVertexBuffer(
 		
 		switch (cmd) {
 			case 'F':
-			case 'G': {
+			case 'G':
+			case 'A':
+			case 'B': {
+				// Use parameter as step size if provided, otherwise use default
+				const step = (sym.params && sym.params.length > 0) ? sym.params[0] : stepSize;
 				const cosA = Math.cos(angle);
 				const sinA = Math.sin(angle);
-				const newX = x + cosA * stepSize;
-				const newY = y + sinA * stepSize;
+				const newX = x + cosA * step;
+				const newY = y + sinA * step;
 				
 				rawX1[segIdx] = x;
 				rawY1[segIdx] = y;
@@ -465,8 +493,9 @@ export function interpretToVertexBuffer(
 			
 			case 'f':
 			case 'g': {
-				x += Math.cos(angle) * stepSize;
-				y += Math.sin(angle) * stepSize;
+				const step = (sym.params && sym.params.length > 0) ? sym.params[0] : stepSize;
+				x += Math.cos(angle) * step;
+				y += Math.sin(angle) * step;
 				break;
 			}
 			
@@ -530,7 +559,15 @@ export function interpretToVertexBuffer(
 	const centerY = (minY + maxY) / 2;
 	
 	// Color params
-	const { colorMode, hueOffset, saturation, lightness, uniformColor } = config;
+	const { colorMode, hueOffset, saturation, lightness, uniformColor, useSpectrum, spectrum } = config;
+	
+	// Compute max values for color normalization
+	let maxDepth = 0;
+	let maxBranchId = 0;
+	for (let i = 0; i < segIdx; i++) {
+		if (rawDepth[i] > maxDepth) maxDepth = rawDepth[i];
+		if (rawBranch[i] > maxBranchId) maxBranchId = rawBranch[i];
+	}
 	
 	// Second pass: normalize + color + write to vertex buffer
 	let vIdx = 0;
@@ -550,32 +587,42 @@ export function interpretToVertexBuffer(
 			g = uniformColor[1];
 			b = uniformColor[2];
 		} else {
-			let hue: number;
+			// Calculate normalized value t (0-1) based on color mode
+			let t: number;
 			
 			switch (colorMode) {
 				case 'depth':
-					hue = (rawDepth[i] * 60 + hueOffset) % 360;
+					t = maxDepth > 0 ? rawDepth[i] / maxDepth : 0;
 					break;
 				case 'branch':
-					hue = ((rawBranch[i] * 137.5) + hueOffset) % 360;
+					t = maxBranchId > 0 ? (rawBranch[i] % 100) / 100 : 0;
 					break;
 				case 'position': {
 					const cx = (x1 + x2) / 2;
 					const cy = (y1 + y2) / 2;
-					hue = (Math.atan2(cy, cx) * 180 / PI + 180 + hueOffset) % 360;
+					t = (Math.atan2(cy, cx) / PI + 1) / 2;
 					break;
 				}
 				case 'age':
-					hue = ((i / segIdx) * 360 + hueOffset) % 360;
+					t = i / segIdx;
 					break;
 				default:
-					hue = hueOffset;
+					t = 0;
 			}
 			
-			const rgb = hslToRgb(hue, saturation, lightness);
-			r = rgb[0];
-			g = rgb[1];
-			b = rgb[2];
+			// Apply color based on spectrum or HSL
+			if (useSpectrum && spectrum) {
+				const rgb = sampleSpectrum(spectrum, t);
+				r = rgb[0];
+				g = rgb[1];
+				b = rgb[2];
+			} else {
+				const hue = (t * 360 + hueOffset) % 360;
+				const rgb = hslToRgb(hue, saturation, lightness);
+				r = rgb[0];
+				g = rgb[1];
+				b = rgb[2];
+			}
 		}
 		
 		// Vertex 1 (start)

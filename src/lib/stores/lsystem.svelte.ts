@@ -17,6 +17,8 @@ import type { GPUDerivationContext } from '../derivation/gpu-derive';
 import { initGPUDerivation, uploadRules, deriveGPU, shouldUseGPU, destroyGPUDerivation } from '../derivation/gpu-derive';
 import type { GPUTurtleContext } from '../turtle/gpu-turtle';
 import { initGPUTurtle, interpretSymbolsGPU, shouldUseGPUTurtle, destroyGPUTurtle } from '../turtle/gpu-turtle';
+import type { ColorSpectrum } from '../color/spectrum';
+import { defaultSpectrum, presetSpectrums, getPresetSpectrum } from '../color/presets';
 
 /** L-system parameters */
 export interface LSystemParams {
@@ -48,12 +50,16 @@ export interface VisualState {
 	colorMode: ColorMode;
 	backgroundColor: string;
 	lineColor: string; // Used for uniform mode
-	lineWidth: number;
+	lineWidth: number; // Future use: line thickness multiplier when ! symbol is implemented
 	showStats: boolean;
-	hueOffset: number; // 0-360, shifts the color palette
+	hueOffset: number; // 0-360, shifts the color palette (legacy, used with HSL mode)
 	is3D: boolean; // 3D rendering mode
-	saturation: number; // 0-1
-	lightness: number; // 0-1
+	saturation: number; // 0-1 (legacy, used with HSL mode)
+	lightness: number; // 0-1 (legacy, used with HSL mode)
+	// Color spectrum system
+	spectrum: ColorSpectrum; // Active color spectrum
+	spectrumPreset: string; // Name of preset spectrum, or 'custom'
+	useSpectrum: boolean; // If true, use spectrum; if false, use legacy HSL
 }
 
 // ============ State Stores ============
@@ -91,6 +97,10 @@ export const visualState = $state<VisualState>({
 	saturation: 0.7,
 	lightness: 0.5,
 	is3D: false,
+	// Color spectrum system
+	spectrum: defaultSpectrum,
+	spectrumPreset: 'Forest',
+	useSpectrum: true, // Use spectrum by default
 });
 
 /** Current preset name */
@@ -109,6 +119,8 @@ let cachedHueOffset = 0;
 let cachedSaturation = 0.7;
 let cachedLightness = 0.5;
 let cachedLineColor = '#4ade80';
+let cachedUseSpectrum = true;
+let cachedSpectrumPreset = 'Forest';
 
 /** GPU derivation context */
 let gpuDerivationCtx: GPUDerivationContext | null = null;
@@ -230,76 +242,6 @@ function hexToRgb(hex: string): [number, number, number] {
 }
 
 /**
- * Apply color to segments based on visual settings
- */
-function applyColors(segments: LineSegment[]): void {
-	if (segments.length === 0) return;
-
-	const { colorMode, hueOffset, saturation, lightness, lineColor } = visualState;
-	
-	// Find max values for normalization
-	let maxDepth = 0;
-	let maxBranchId = 0;
-	let minX = Infinity, maxX = -Infinity;
-	let minY = Infinity, maxY = -Infinity;
-	
-	for (const seg of segments) {
-		maxDepth = Math.max(maxDepth, seg.depth);
-		maxBranchId = Math.max(maxBranchId, seg.branchId);
-		minX = Math.min(minX, seg.start[0], seg.end[0]);
-		maxX = Math.max(maxX, seg.start[0], seg.end[0]);
-		minY = Math.min(minY, seg.start[1], seg.end[1]);
-		maxY = Math.max(maxY, seg.start[1], seg.end[1]);
-	}
-	
-	const rangeX = maxX - minX || 1;
-	const rangeY = maxY - minY || 1;
-
-	for (let i = 0; i < segments.length; i++) {
-		const seg = segments[i];
-		let hue: number;
-
-		switch (colorMode) {
-			case 'depth':
-				// Color by branch depth
-				hue = (seg.depth * 60 + hueOffset) % 360;
-				break;
-			
-			case 'branch':
-				// Unique color per branch
-				hue = ((seg.branchId * 137.5) + hueOffset) % 360; // Golden angle for spread
-				break;
-			
-			case 'position':
-				// Color by position (radial gradient from center)
-				const cx = (seg.start[0] + seg.end[0]) / 2;
-				const cy = (seg.start[1] + seg.end[1]) / 2;
-				const nx = (cx - minX) / rangeX;
-				const ny = (cy - minY) / rangeY;
-				hue = (Math.atan2(ny - 0.5, nx - 0.5) * 180 / Math.PI + 180 + hueOffset) % 360;
-				break;
-			
-			case 'age':
-				// Color by drawing order
-				hue = ((i / segments.length) * 360 + hueOffset) % 360;
-				break;
-			
-			case 'uniform':
-				// Single color from lineColor setting
-				const rgb = hexToRgb(lineColor);
-				seg.color = [rgb[0], rgb[1], rgb[2], 1.0];
-				continue;
-			
-			default:
-				hue = hueOffset;
-		}
-
-		const rgb = hslToRgb(hue, saturation, lightness);
-		seg.color = [rgb[0], rgb[1], rgb[2], 1.0];
-	}
-}
-
-/**
  * Interpret symbols to segments (cached - only recomputes when needed)
  * Uses optimized fast turtle with fused normalization and coloring
  */
@@ -314,7 +256,9 @@ function interpretToSegments(symbols: Symbol[]): LineSegment[] {
 		visualState.hueOffset !== cachedHueOffset ||
 		visualState.saturation !== cachedSaturation ||
 		visualState.lightness !== cachedLightness ||
-		visualState.lineColor !== cachedLineColor;
+		visualState.lineColor !== cachedLineColor ||
+		visualState.useSpectrum !== cachedUseSpectrum ||
+		visualState.spectrumPreset !== cachedSpectrumPreset;
 	
 	if (!needsRecompute) {
 		return cachedSegments;
@@ -330,6 +274,9 @@ function interpretToSegments(symbols: Symbol[]): LineSegment[] {
 		saturation: visualState.saturation,
 		lightness: visualState.lightness,
 		uniformColor: hexToRgbArray(visualState.lineColor),
+		// Spectrum coloring
+		useSpectrum: visualState.useSpectrum,
+		spectrum: visualState.spectrum,
 	};
 
 	cachedSegments = interpretFast(symbols, config);
@@ -341,6 +288,8 @@ function interpretToSegments(symbols: Symbol[]): LineSegment[] {
 	cachedSaturation = visualState.saturation;
 	cachedLightness = visualState.lightness;
 	cachedLineColor = visualState.lineColor;
+	cachedUseSpectrum = visualState.useSpectrum;
+	cachedSpectrumPreset = visualState.spectrumPreset;
 	
 	engineState.segmentCount = cachedSegments.length;
 	engineState.lastInterpretTime = performance.now() - startTime;
@@ -369,6 +318,8 @@ let cachedVertexHueOffset = 0;
 let cachedVertexSaturation = 0.7;
 let cachedVertexLightness = 0.5;
 let cachedVertexLineColor = '#4ade80';
+let cachedVertexUseSpectrum = true;
+let cachedVertexSpectrumPreset = 'Forest';
 
 /**
  * Ultra-fast path: compute directly to GPU vertex format
@@ -401,7 +352,9 @@ export function computeVertexBuffer(): {
 		visualState.hueOffset !== cachedVertexHueOffset ||
 		visualState.saturation !== cachedVertexSaturation ||
 		visualState.lightness !== cachedVertexLightness ||
-		visualState.lineColor !== cachedVertexLineColor;
+		visualState.lineColor !== cachedVertexLineColor ||
+		visualState.useSpectrum !== cachedVertexUseSpectrum ||
+		visualState.spectrumPreset !== cachedVertexSpectrumPreset;
 	
 	if (!needsRecompute && cachedVertexData) {
 		return {
@@ -421,6 +374,9 @@ export function computeVertexBuffer(): {
 		saturation: visualState.saturation,
 		lightness: visualState.lightness,
 		uniformColor: hexToRgbArray(visualState.lineColor),
+		// Spectrum coloring
+		useSpectrum: visualState.useSpectrum,
+		spectrum: visualState.spectrum,
 	};
 
 	const result = interpretToVertexBuffer(symbols, config);
@@ -439,6 +395,8 @@ export function computeVertexBuffer(): {
 	cachedVertexSaturation = visualState.saturation;
 	cachedVertexLightness = visualState.lightness;
 	cachedVertexLineColor = visualState.lineColor;
+	cachedVertexUseSpectrum = visualState.useSpectrum;
+	cachedVertexSpectrumPreset = visualState.spectrumPreset;
 	
 	// Also update standard caches for compatibility
 	cachedAngle = lsystemParams.angle;
@@ -447,6 +405,8 @@ export function computeVertexBuffer(): {
 	cachedSaturation = visualState.saturation;
 	cachedLightness = visualState.lightness;
 	cachedLineColor = visualState.lineColor;
+	cachedUseSpectrum = visualState.useSpectrum;
+	cachedSpectrumPreset = visualState.spectrumPreset;
 	
 	engineState.segmentCount = result.segmentCount;
 	engineState.lastInterpretTime = performance.now() - startTime;
@@ -469,6 +429,8 @@ let cached3DHueOffset = 0;
 let cached3DSaturation = 0.7;
 let cached3DLightness = 0.5;
 let cached3DLineColor = '#4ade80';
+let cached3DUseSpectrum = true;
+let cached3DSpectrumPreset = 'Forest';
 
 /**
  * Compute 3D segments from current state
@@ -489,7 +451,9 @@ export function computeSegments3D(): Segment3D[] {
 		visualState.hueOffset !== cached3DHueOffset ||
 		visualState.saturation !== cached3DSaturation ||
 		visualState.lightness !== cached3DLightness ||
-		visualState.lineColor !== cached3DLineColor;
+		visualState.lineColor !== cached3DLineColor ||
+		visualState.useSpectrum !== cached3DUseSpectrum ||
+		visualState.spectrumPreset !== cached3DSpectrumPreset;
 	
 	if (!needsRecompute) {
 		return cached3DSegments;
@@ -505,6 +469,9 @@ export function computeSegments3D(): Segment3D[] {
 		saturation: visualState.saturation,
 		lightness: visualState.lightness,
 		uniformColor: hexToRgbArray(visualState.lineColor),
+		// Spectrum coloring
+		useSpectrum: visualState.useSpectrum,
+		spectrum: visualState.spectrum,
 	};
 	
 	cached3DSegments = interpretFast3D(symbols, config);
@@ -518,6 +485,8 @@ export function computeSegments3D(): Segment3D[] {
 	cached3DSaturation = visualState.saturation;
 	cached3DLightness = visualState.lightness;
 	cached3DLineColor = visualState.lineColor;
+	cached3DUseSpectrum = visualState.useSpectrum;
+	cached3DSpectrumPreset = visualState.spectrumPreset;
 	
 	engineState.segmentCount = cached3DSegments.length;
 	engineState.lastInterpretTime = performance.now() - startTime;
@@ -539,6 +508,8 @@ let cached3DVertexHueOffset = 0;
 let cached3DVertexSaturation = 0.7;
 let cached3DVertexLightness = 0.5;
 let cached3DVertexLineColor = '#4ade80';
+let cached3DVertexUseSpectrum = true;
+let cached3DVertexSpectrumPreset = 'Forest';
 
 /**
  * Ultra-fast 3D path: compute directly to GPU vertex format
@@ -569,7 +540,9 @@ export function computeVertexBuffer3D(): {
 		visualState.hueOffset !== cached3DVertexHueOffset ||
 		visualState.saturation !== cached3DVertexSaturation ||
 		visualState.lightness !== cached3DVertexLightness ||
-		visualState.lineColor !== cached3DVertexLineColor;
+		visualState.lineColor !== cached3DVertexLineColor ||
+		visualState.useSpectrum !== cached3DVertexUseSpectrum ||
+		visualState.spectrumPreset !== cached3DVertexSpectrumPreset;
 	
 	if (!needsRecompute && cached3DVertexData) {
 		return {
@@ -589,6 +562,9 @@ export function computeVertexBuffer3D(): {
 		saturation: visualState.saturation,
 		lightness: visualState.lightness,
 		uniformColor: hexToRgbArray(visualState.lineColor),
+		// Spectrum coloring
+		useSpectrum: visualState.useSpectrum,
+		spectrum: visualState.spectrum,
 	};
 
 	const result = interpretToVertexBuffer3D(symbols, config);
@@ -607,6 +583,8 @@ export function computeVertexBuffer3D(): {
 	cached3DVertexSaturation = visualState.saturation;
 	cached3DVertexLightness = visualState.lightness;
 	cached3DVertexLineColor = visualState.lineColor;
+	cached3DVertexUseSpectrum = visualState.useSpectrum;
+	cached3DVertexSpectrumPreset = visualState.spectrumPreset;
 	
 	engineState.segmentCount = result.segmentCount;
 	engineState.lastInterpretTime = performance.now() - startTime;
@@ -666,7 +644,10 @@ export function loadPreset(preset: Preset): void {
 	
 	// D0L rules
 	for (const r of preset.grammar.rules) {
-		ruleLines.push(`${r.predecessor} -> ${r.successor.map((s) => s.id).join('')}`);
+		const successor = r.successor.map((s) => s.id).join('');
+		// Include probability if it's a stochastic rule
+		const prob = r.probability !== undefined && r.probability !== 1 ? ` (${r.probability})` : '';
+		ruleLines.push(`${r.predecessor} -> ${successor}${prob}`);
 	}
 	
 	// Parametric rules
@@ -680,7 +661,9 @@ export function loadPreset(preset: Preset): void {
 				}
 				return s.symbol;
 			}).join('');
-			ruleLines.push(`${r.predecessor}${params}${condition} -> ${successor}`);
+			// Include probability if it's a stochastic rule
+			const prob = r.probability !== undefined && r.probability !== 1 ? ` (${r.probability})` : '';
+			ruleLines.push(`${r.predecessor}${params}${condition} -> ${successor}${prob}`);
 		}
 	}
 	
@@ -747,6 +730,45 @@ export function setIterations(n: number): void {
 export function getPresets(): Preset[] {
 	return allPresets;
 }
+
+// ============ Color Spectrum Management ============
+
+/**
+ * Set spectrum by preset name
+ */
+export function setSpectrumPreset(presetName: string): void {
+	const spectrum = getPresetSpectrum(presetName);
+	if (spectrum) {
+		visualState.spectrum = spectrum;
+		visualState.spectrumPreset = presetName;
+	}
+}
+
+/**
+ * Set a custom spectrum
+ */
+export function setCustomSpectrum(spectrum: ColorSpectrum): void {
+	visualState.spectrum = spectrum;
+	visualState.spectrumPreset = 'custom';
+}
+
+/**
+ * Toggle between spectrum and legacy HSL coloring
+ */
+export function setUseSpectrum(useSpectrum: boolean): void {
+	visualState.useSpectrum = useSpectrum;
+}
+
+/**
+ * Get all available spectrum presets
+ */
+export function getSpectrumPresets(): ColorSpectrum[] {
+	return presetSpectrums;
+}
+
+// Re-export color types for use in components
+export type { ColorSpectrum } from '../color/spectrum';
+export { presetSpectrums } from '../color/presets';
 
 // ============ GPU Integration ============
 
