@@ -67,10 +67,31 @@
 	}
 
 	// Fast path: compute vertex buffer directly without intermediate objects
+	// Uses a polling approach to avoid expensive dependency tracking
+	let updateScheduled = false;
+	
+	function scheduleUpdate() {
+		if (updateScheduled) return;
+		updateScheduled = true;
+		requestAnimationFrame(() => {
+			updateScheduled = false;
+			if (!renderer || !isInitialized || visualState.is3D) return;
+			
+			const result = computeVertexBuffer();
+			if (result && (result.changed || result.vertexCount !== lastVertexCount)) {
+				renderer.updateVertexBuffer(result.vertexData, result.vertexCount, result.useTriangles);
+				lastVertexCount = result.vertexCount;
+				uploadedSegmentCount = result.segmentCount;
+				renderFrame();
+			}
+		});
+	}
+	
+	// Track all relevant dependencies and schedule updates
 	$effect(() => {
 		if (!renderer || !isInitialized || visualState.is3D) return;
 		
-		// Track dependencies for recomputation
+		// Access dependencies to trigger re-run when they change
 		void lsystemParams.axiom;
 		void lsystemParams.rules;
 		void lsystemParams.iterations;
@@ -80,25 +101,12 @@
 		void visualState.saturation;
 		void visualState.lightness;
 		void visualState.lineColor;
+		void visualState.useSpectrum;
+		void visualState.spectrumPreset;
+		void visualState.useOpacityCurve;
+		void visualState.lineWidth;
 		
-		if (USE_FAST_PATH) {
-			// Ultra-fast path: direct vertex buffer output
-			const result = computeVertexBuffer();
-			if (result && (result.changed || result.vertexCount !== lastVertexCount)) {
-				renderer.updateVertexBuffer(result.vertexData, result.vertexCount);
-				lastVertexCount = result.vertexCount;
-				uploadedSegmentCount = result.segmentCount;
-				// Immediately render after upload
-				renderFrame();
-			}
-		} else {
-			// Legacy path: use segments prop
-			if (segments.length > 0 && segments.length !== uploadedSegmentCount) {
-				renderer.updateSegments(segments);
-				uploadedSegmentCount = segments.length;
-				renderFrame();
-			}
-		}
+		scheduleUpdate();
 	});
 
 	// Re-render when view changes (cheap - only uniforms)

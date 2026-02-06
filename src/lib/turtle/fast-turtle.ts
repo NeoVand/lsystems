@@ -19,6 +19,12 @@ import { sampleSpectrum } from '../color/spectrum';
 export type ColorMode = 'depth' | 'branch' | 'position' | 'age' | 'uniform';
 
 /** Configuration for fast turtle */
+/** Point on an opacity curve */
+export interface OpacityCurvePoint {
+	x: number; // 0-1 position (e.g., depth ratio)
+	y: number; // 0-1 opacity value
+}
+
 export interface FastTurtleConfig {
 	angle: number; // Turn angle in degrees
 	colorMode: ColorMode;
@@ -29,6 +35,11 @@ export interface FastTurtleConfig {
 	// Spectrum coloring
 	useSpectrum?: boolean; // If true, use spectrum instead of HSL
 	spectrum?: ColorSpectrum; // The color spectrum to use
+	// Opacity curve
+	useOpacityCurve?: boolean;
+	opacityCurve?: OpacityCurvePoint[];
+	// Line width (in pixels, for thick line rendering)
+	lineWidth?: number; // Default 1 (thin lines). >1 uses triangle quads
 }
 
 // Pre-allocated buffers for reuse across calls
@@ -66,6 +77,36 @@ function fastCos(rad: number): number {
 	if (deg < 0) deg += 360;
 	const idx = Math.round(deg * 10) % ANGLE_LUT_SIZE;
 	return cosLUT[idx];
+}
+
+/**
+ * Sample opacity curve at position t (0-1)
+ * Uses linear interpolation between points
+ */
+function sampleOpacityCurve(curve: OpacityCurvePoint[], t: number): number {
+	if (!curve || curve.length === 0) return 1;
+	if (curve.length === 1) return curve[0].y;
+	
+	// Clamp t to [0, 1]
+	const clampedT = t < 0 ? 0 : (t > 1 ? 1 : t);
+	
+	// Find surrounding points (assume sorted by x)
+	let i = 0;
+	while (i < curve.length - 1 && curve[i + 1].x < clampedT) {
+		i++;
+	}
+	
+	// Handle edge cases
+	if (i >= curve.length - 1) return curve[curve.length - 1].y;
+	if (clampedT <= curve[0].x) return curve[0].y;
+	
+	// Linear interpolation
+	const p0 = curve[i];
+	const p1 = curve[i + 1];
+	const denom = p1.x - p0.x;
+	if (denom === 0) return p0.y;
+	const localT = (clampedT - p0.x) / denom;
+	return p0.y + localT * (p1.y - p0.y);
 }
 
 /**
@@ -398,7 +439,7 @@ let vertexBufferCapacity = 0;
 export function interpretToVertexBuffer(
 	symbols: Symbol[],
 	config: FastTurtleConfig
-): { vertexData: Float32Array; vertexCount: number; segmentCount: number } | null {
+): { vertexData: Float32Array; vertexCount: number; segmentCount: number; useTriangles: boolean } | null {
 	if (symbols.length === 0) return null;
 	
 	// Pre-count draw commands
@@ -410,8 +451,15 @@ export function interpretToVertexBuffer(
 	
 	if (drawCount === 0) return null;
 	
-	// Ensure buffer capacity (12 floats per segment: 2 vertices × 6 floats)
-	const floatsNeeded = drawCount * 12;
+	// Determine if we need thick lines (triangles)
+	const lineWidth = config.lineWidth ?? 1;
+	const useTriangles = lineWidth > 1;
+	
+	// Floats needed:
+	// - Thin lines (line-list): 12 floats per segment (2 vertices × 6 floats)
+	// - Thick lines (triangle-list): 36 floats per segment (6 vertices × 6 floats for 2 triangles)
+	const floatsPerSegment = useTriangles ? 36 : 12;
+	const floatsNeeded = drawCount * floatsPerSegment;
 	if (vertexBufferCapacity < floatsNeeded || !vertexBuffer) {
 		vertexBufferCapacity = Math.max(floatsNeeded, vertexBufferCapacity * 2, 12288);
 		vertexBuffer = new Float32Array(vertexBufferCapacity);
@@ -559,7 +607,18 @@ export function interpretToVertexBuffer(
 	const centerY = (minY + maxY) / 2;
 	
 	// Color params
-	const { colorMode, hueOffset, saturation, lightness, uniformColor, useSpectrum, spectrum } = config;
+	const { colorMode, hueOffset, saturation, lightness, uniformColor, useSpectrum, spectrum, useOpacityCurve, opacityCurve, lineWidth: configLineWidth } = config;
+	
+	// Line width in normalized coordinates (scale from pixels to normalized space)
+	// The normalized coordinate range is approximately [-0.9, 0.9] after scaling
+	// We want lineWidth=1 to be thin (use lines), lineWidth=5 to be visibly thick
+	// Scale factor: lineWidth of 5 should produce roughly 1-2% of the canvas width
+	const halfWidth = ((configLineWidth ?? 1) / 2) * 0.008; // 0.8% per unit of lineWidth
+	
+	// Sort opacity curve points for efficient sampling
+	const sortedOpacityCurve = useOpacityCurve && opacityCurve 
+		? [...opacityCurve].sort((a, b) => a.x - b.x) 
+		: null;
 	
 	// Compute max values for color normalization
 	let maxDepth = 0;
@@ -625,26 +684,75 @@ export function interpretToVertexBuffer(
 			}
 		}
 		
-		// Vertex 1 (start)
-		vertexBuffer![vIdx++] = x1;
-		vertexBuffer![vIdx++] = y1;
-		vertexBuffer![vIdx++] = r;
-		vertexBuffer![vIdx++] = g;
-		vertexBuffer![vIdx++] = b;
-		vertexBuffer![vIdx++] = 1.0;
+		// Calculate alpha from opacity curve (based on depth)
+		let alpha = 1.0;
+		if (sortedOpacityCurve && maxDepth > 0) {
+			const depthT = rawDepth[i] / maxDepth;
+			alpha = sampleOpacityCurve(sortedOpacityCurve, depthT);
+		}
 		
-		// Vertex 2 (end)
-		vertexBuffer![vIdx++] = x2;
-		vertexBuffer![vIdx++] = y2;
-		vertexBuffer![vIdx++] = r;
-		vertexBuffer![vIdx++] = g;
-		vertexBuffer![vIdx++] = b;
-		vertexBuffer![vIdx++] = 1.0;
+		if (useTriangles) {
+			// Generate a quad (2 triangles, 6 vertices) for thick lines
+			// Calculate perpendicular direction
+			const dx = x2 - x1;
+			const dy = y2 - y1;
+			const len = Math.sqrt(dx * dx + dy * dy);
+			
+			if (len > 0) {
+				// Perpendicular unit vector scaled by half-width
+				const px = (-dy / len) * halfWidth;
+				const py = (dx / len) * halfWidth;
+				
+				// Four corners of the quad
+				const ax = x1 - px, ay = y1 - py; // Bottom-left
+				const bx = x1 + px, by = y1 + py; // Top-left
+				const cx = x2 + px, cy = y2 + py; // Top-right
+				const dx2 = x2 - px, dy2 = y2 - py; // Bottom-right
+				
+				// Triangle 1: A, B, C
+				vertexBuffer![vIdx++] = ax; vertexBuffer![vIdx++] = ay;
+				vertexBuffer![vIdx++] = r; vertexBuffer![vIdx++] = g; vertexBuffer![vIdx++] = b; vertexBuffer![vIdx++] = alpha;
+				
+				vertexBuffer![vIdx++] = bx; vertexBuffer![vIdx++] = by;
+				vertexBuffer![vIdx++] = r; vertexBuffer![vIdx++] = g; vertexBuffer![vIdx++] = b; vertexBuffer![vIdx++] = alpha;
+				
+				vertexBuffer![vIdx++] = cx; vertexBuffer![vIdx++] = cy;
+				vertexBuffer![vIdx++] = r; vertexBuffer![vIdx++] = g; vertexBuffer![vIdx++] = b; vertexBuffer![vIdx++] = alpha;
+				
+				// Triangle 2: A, C, D
+				vertexBuffer![vIdx++] = ax; vertexBuffer![vIdx++] = ay;
+				vertexBuffer![vIdx++] = r; vertexBuffer![vIdx++] = g; vertexBuffer![vIdx++] = b; vertexBuffer![vIdx++] = alpha;
+				
+				vertexBuffer![vIdx++] = cx; vertexBuffer![vIdx++] = cy;
+				vertexBuffer![vIdx++] = r; vertexBuffer![vIdx++] = g; vertexBuffer![vIdx++] = b; vertexBuffer![vIdx++] = alpha;
+				
+				vertexBuffer![vIdx++] = dx2; vertexBuffer![vIdx++] = dy2;
+				vertexBuffer![vIdx++] = r; vertexBuffer![vIdx++] = g; vertexBuffer![vIdx++] = b; vertexBuffer![vIdx++] = alpha;
+			}
+		} else {
+			// Simple line (2 vertices)
+			// Vertex 1 (start)
+			vertexBuffer![vIdx++] = x1;
+			vertexBuffer![vIdx++] = y1;
+			vertexBuffer![vIdx++] = r;
+			vertexBuffer![vIdx++] = g;
+			vertexBuffer![vIdx++] = b;
+			vertexBuffer![vIdx++] = alpha;
+			
+			// Vertex 2 (end)
+			vertexBuffer![vIdx++] = x2;
+			vertexBuffer![vIdx++] = y2;
+			vertexBuffer![vIdx++] = r;
+			vertexBuffer![vIdx++] = g;
+			vertexBuffer![vIdx++] = b;
+			vertexBuffer![vIdx++] = alpha;
+		}
 	}
 	
 	return {
 		vertexData: vertexBuffer!,
-		vertexCount: segIdx * 2,
+		vertexCount: useTriangles ? segIdx * 6 : segIdx * 2,
 		segmentCount: segIdx,
+		useTriangles,
 	};
 }

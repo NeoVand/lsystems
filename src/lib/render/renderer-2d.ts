@@ -66,11 +66,13 @@ interface Uniforms {
  * 2D Line Renderer using WebGPU
  */
 export class Renderer2D {
-	private pipeline: GPURenderPipeline | null = null;
+	private linePipeline: GPURenderPipeline | null = null;
+	private trianglePipeline: GPURenderPipeline | null = null;
 	private uniformBuffer: GPUBuffer | null = null;
 	private vertexBuffer: GPUBuffer | null = null;
 	private bindGroup: GPUBindGroup | null = null;
 	private vertexCount = 0;
+	private useTriangleMode = false; // Whether current data uses triangles
 
 	constructor(private ctx: GPUContext) {}
 
@@ -122,35 +124,74 @@ export class Renderer2D {
 			],
 		});
 
-		// Create pipeline
+		// Create pipeline layout
 		const pipelineLayout = device.createPipelineLayout({
 			label: 'Renderer Pipeline Layout',
 			bindGroupLayouts: [bindGroupLayout],
 		});
+		
+		// Common vertex buffer layout
+		const vertexBuffers: GPUVertexBufferLayout[] = [
+			{
+				arrayStride: 24, // 2 floats position + 4 floats color = 24 bytes
+				attributes: [
+					{ shaderLocation: 0, offset: 0, format: 'float32x2' }, // position
+					{ shaderLocation: 1, offset: 8, format: 'float32x4' }, // color
+				],
+			},
+		];
+		
+		// Common fragment state
+		const fragmentState: GPUFragmentState = {
+			module: fragmentModule,
+			entryPoint: 'main',
+			targets: [{
+				format,
+				blend: {
+					color: {
+						srcFactor: 'src-alpha',
+						dstFactor: 'one-minus-src-alpha',
+						operation: 'add',
+					},
+					alpha: {
+						srcFactor: 'one',
+						dstFactor: 'one-minus-src-alpha',
+						operation: 'add',
+					},
+				},
+			}],
+		};
 
-		this.pipeline = device.createRenderPipeline({
+		// Create line pipeline (for thin lines)
+		this.linePipeline = device.createRenderPipeline({
 			label: '2D Line Pipeline',
 			layout: pipelineLayout,
 			vertex: {
 				module: vertexModule,
 				entryPoint: 'main',
-				buffers: [
-					{
-						arrayStride: 24, // 2 floats position + 4 floats color = 24 bytes
-						attributes: [
-							{ shaderLocation: 0, offset: 0, format: 'float32x2' }, // position
-							{ shaderLocation: 1, offset: 8, format: 'float32x4' }, // color
-						],
-					},
-				],
+				buffers: vertexBuffers,
 			},
-			fragment: {
-				module: fragmentModule,
-				entryPoint: 'main',
-				targets: [{ format }],
-			},
+			fragment: fragmentState,
 			primitive: {
 				topology: 'line-list',
+			},
+			multisample: {
+				count: 1,
+			},
+		});
+		
+		// Create triangle pipeline (for thick lines rendered as quads)
+		this.trianglePipeline = device.createRenderPipeline({
+			label: '2D Triangle Pipeline',
+			layout: pipelineLayout,
+			vertex: {
+				module: vertexModule,
+				entryPoint: 'main',
+				buffers: vertexBuffers,
+			},
+			fragment: fragmentState,
+			primitive: {
+				topology: 'triangle-list',
 			},
 			multisample: {
 				count: 1,
@@ -218,9 +259,10 @@ export class Renderer2D {
 	 * This is the fast path - skips all intermediate conversions
 	 * 
 	 * @param vertexData Pre-formatted array: [x1, y1, r, g, b, a, x2, y2, r, g, b, a, ...]
-	 * @param vertexCount Number of vertices (2 per line segment)
+	 * @param vertexCount Number of vertices (2 per line segment for lines, 6 per segment for triangles)
+	 * @param useTriangles Whether the data is triangles (true) or lines (false)
 	 */
-	updateVertexBuffer(vertexData: Float32Array, vertexCount: number): void {
+	updateVertexBuffer(vertexData: Float32Array, vertexCount: number, useTriangles: boolean = false): void {
 		const { device } = this.ctx;
 		
 		const bytesNeeded = vertexCount * 6 * 4; // 6 floats per vertex, 4 bytes per float
@@ -238,6 +280,7 @@ export class Renderer2D {
 		// Direct upload - no intermediate processing
 		device.queue.writeBuffer(this.vertexBuffer, 0, vertexData.buffer, 0, bytesNeeded);
 		this.vertexCount = vertexCount;
+		this.useTriangleMode = useTriangles;
 	}
 
 	/**
@@ -267,7 +310,10 @@ export class Renderer2D {
 	 * Render a frame
 	 */
 	render(backgroundColor: [number, number, number, number] = [0.04, 0.04, 0.06, 1]): void {
-		if (!this.pipeline || !this.bindGroup || this.vertexCount === 0) {
+		// Select pipeline based on current rendering mode
+		const pipeline = this.useTriangleMode ? this.trianglePipeline : this.linePipeline;
+		
+		if (!pipeline || !this.bindGroup || this.vertexCount === 0) {
 			return;
 		}
 
@@ -287,7 +333,7 @@ export class Renderer2D {
 			],
 		});
 
-		renderPass.setPipeline(this.pipeline);
+		renderPass.setPipeline(pipeline);
 		renderPass.setBindGroup(0, this.bindGroup);
 		renderPass.setVertexBuffer(0, this.vertexBuffer!);
 		renderPass.draw(this.vertexCount);

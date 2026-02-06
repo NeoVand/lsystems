@@ -19,6 +19,7 @@ import type { GPUTurtleContext } from '../turtle/gpu-turtle';
 import { initGPUTurtle, interpretSymbolsGPU, shouldUseGPUTurtle, destroyGPUTurtle } from '../turtle/gpu-turtle';
 import type { ColorSpectrum } from '../color/spectrum';
 import { defaultSpectrum, presetSpectrums, getPresetSpectrum } from '../color/presets';
+import { discoverParameters, updateParameterInGrammar, type DiscoveredParam } from '../params/discovery';
 
 /** L-system parameters */
 export interface LSystemParams {
@@ -45,6 +46,12 @@ export interface EngineState {
 /** Color mode options */
 export type ColorMode = 'depth' | 'branch' | 'position' | 'age' | 'uniform';
 
+/** Point on an opacity/property curve */
+export interface CurvePoint {
+	x: number; // 0-1 position (e.g., depth ratio)
+	y: number; // 0-1 value (e.g., opacity)
+}
+
 /** Visualization settings */
 export interface VisualState {
 	colorMode: ColorMode;
@@ -60,6 +67,9 @@ export interface VisualState {
 	spectrum: ColorSpectrum; // Active color spectrum
 	spectrumPreset: string; // Name of preset spectrum, or 'custom'
 	useSpectrum: boolean; // If true, use spectrum; if false, use legacy HSL
+	// Opacity curve (maps depth to opacity)
+	opacityCurve: CurvePoint[];
+	useOpacityCurve: boolean; // Whether to apply opacity curve
 }
 
 // ============ State Stores ============
@@ -101,6 +111,12 @@ export const visualState = $state<VisualState>({
 	spectrum: defaultSpectrum,
 	spectrumPreset: 'Forest',
 	useSpectrum: true, // Use spectrum by default
+	// Opacity curve (default: linear, full opacity)
+	opacityCurve: [
+		{ x: 0, y: 1 },
+		{ x: 1, y: 1 },
+	],
+	useOpacityCurve: false,
 });
 
 /** Current preset name */
@@ -162,22 +178,26 @@ export function getCurrentGrammarPure(): Grammar | null {
 	return parseCurrentGrammar().grammar;
 }
 
+/** Simple cache key from raw inputs (avoid expensive parsing/serializing for cache check) */
+let cachedInputKey = '';
+
 /**
  * Derive symbols (cached - only recomputes when grammar/iterations change)
  * Uses CPU derivation (GPU derivation available via computeSegmentsAsync)
  */
 function deriveSymbols(): Symbol[] {
-	const grammar = getCurrentGrammarPure();
-	if (!grammar) return [];
-
-	const grammarStr = serializeGrammar(grammar);
+	// Fast cache key from raw inputs - no parsing needed
+	const inputKey = `${lsystemParams.axiom}|${lsystemParams.rules}|${lsystemParams.iterations}`;
 	
-	// Check if we can use cached symbols
-	if (grammarStr === cachedGrammarStr && lsystemParams.iterations === cachedIterations) {
+	// Check if we can use cached symbols (fast string comparison)
+	if (inputKey === cachedInputKey && cachedSymbols.length > 0) {
 		return cachedSymbols;
 	}
 
-	// Need to re-derive
+	// Need to re-derive - now we parse
+	const grammar = getCurrentGrammarPure();
+	if (!grammar) return [];
+
 	engineState.isComputing = true;
 	const startTime = performance.now();
 	
@@ -191,7 +211,8 @@ function deriveSymbols(): Symbol[] {
 	
 	// Update cache
 	cachedSymbols = symbols;
-	cachedGrammarStr = grammarStr;
+	cachedInputKey = inputKey;
+	cachedGrammarStr = serializeGrammar(grammar); // Still store for vertex buffer cache
 	cachedIterations = lsystemParams.iterations;
 	engineState.isComputing = false;
 	
@@ -311,7 +332,6 @@ let cachedVertexData: Float32Array | null = null;
 let cachedVertexCount = 0;
 let cachedVertexAngle = -1;
 let cachedVertexSymbolCount = -1;
-let cachedVertexGrammarStr = '';
 let cachedVertexIterations = -1;
 let cachedVertexColorMode: ColorMode = 'depth';
 let cachedVertexHueOffset = 0;
@@ -320,29 +340,37 @@ let cachedVertexLightness = 0.5;
 let cachedVertexLineColor = '#4ade80';
 let cachedVertexUseSpectrum = true;
 let cachedVertexSpectrumPreset = 'Forest';
+let cachedVertexUseOpacityCurve = false;
+let cachedVertexOpacityCurveStr = '';
+let cachedVertexLineWidth = 1;
+let cachedVertexUseTriangles = false;
 
 /**
  * Ultra-fast path: compute directly to GPU vertex format
  * Returns null if nothing changed (use cached data)
  */
+/** Vertex buffer cache key */
+let cachedVertexInputKey = '';
+
 export function computeVertexBuffer(): { 
 	vertexData: Float32Array; 
 	vertexCount: number; 
 	segmentCount: number;
+	useTriangles: boolean;
 	changed: boolean;
 } | null {
-	const symbols = deriveSymbols();
-	if (symbols.length === 0) return null;
+	// Fast cache key for input parameters
+	const inputKey = `${lsystemParams.axiom}|${lsystemParams.rules}|${lsystemParams.iterations}`;
 	
-	// Get current grammar string for comparison
-	const grammar = getCurrentGrammarPure();
-	const grammarStr = grammar ? serializeGrammar(grammar) : '';
+	// Check if symbols changed (fast string comparison)
+	const symbolsChanged = inputKey !== cachedVertexInputKey;
 	
-	// Check if anything changed - including symbols (grammar, iterations)
-	const symbolsChanged = 
-		symbols.length !== cachedVertexSymbolCount ||
-		grammarStr !== cachedVertexGrammarStr ||
-		lsystemParams.iterations !== cachedVertexIterations;
+	// Check opacity curve only if it's enabled (avoid expensive stringify)
+	let opacityCurveChanged = false;
+	if (visualState.useOpacityCurve) {
+		const currentCurveStr = JSON.stringify(visualState.opacityCurve);
+		opacityCurveChanged = currentCurveStr !== cachedVertexOpacityCurveStr;
+	}
 	
 	const needsRecompute = 
 		symbolsChanged ||
@@ -354,16 +382,24 @@ export function computeVertexBuffer(): {
 		visualState.lightness !== cachedVertexLightness ||
 		visualState.lineColor !== cachedVertexLineColor ||
 		visualState.useSpectrum !== cachedVertexUseSpectrum ||
-		visualState.spectrumPreset !== cachedVertexSpectrumPreset;
+		visualState.spectrumPreset !== cachedVertexSpectrumPreset ||
+		visualState.useOpacityCurve !== cachedVertexUseOpacityCurve ||
+		visualState.lineWidth !== cachedVertexLineWidth ||
+		opacityCurveChanged;
 	
 	if (!needsRecompute && cachedVertexData) {
 		return {
 			vertexData: cachedVertexData,
 			vertexCount: cachedVertexCount,
-			segmentCount: cachedVertexCount / 2,
+			segmentCount: cachedVertexUseTriangles ? cachedVertexCount / 6 : cachedVertexCount / 2,
+			useTriangles: cachedVertexUseTriangles,
 			changed: false,
 		};
 	}
+
+	// Now we actually need symbols - derive them
+	const symbols = deriveSymbols();
+	if (symbols.length === 0) return null;
 
 	const startTime = performance.now();
 
@@ -377,6 +413,11 @@ export function computeVertexBuffer(): {
 		// Spectrum coloring
 		useSpectrum: visualState.useSpectrum,
 		spectrum: visualState.spectrum,
+		// Opacity curve
+		useOpacityCurve: visualState.useOpacityCurve,
+		opacityCurve: visualState.opacityCurve,
+		// Line width
+		lineWidth: visualState.lineWidth,
 	};
 
 	const result = interpretToVertexBuffer(symbols, config);
@@ -386,8 +427,8 @@ export function computeVertexBuffer(): {
 	// Update caches
 	cachedVertexData = result.vertexData;
 	cachedVertexCount = result.vertexCount;
+	cachedVertexInputKey = inputKey;
 	cachedVertexSymbolCount = symbols.length;
-	cachedVertexGrammarStr = grammarStr;
 	cachedVertexIterations = lsystemParams.iterations;
 	cachedVertexAngle = lsystemParams.angle;
 	cachedVertexColorMode = visualState.colorMode;
@@ -397,6 +438,10 @@ export function computeVertexBuffer(): {
 	cachedVertexLineColor = visualState.lineColor;
 	cachedVertexUseSpectrum = visualState.useSpectrum;
 	cachedVertexSpectrumPreset = visualState.spectrumPreset;
+	cachedVertexUseOpacityCurve = visualState.useOpacityCurve;
+	cachedVertexOpacityCurveStr = JSON.stringify(visualState.opacityCurve);
+	cachedVertexLineWidth = visualState.lineWidth;
+	cachedVertexUseTriangles = result.useTriangles;
 	
 	// Also update standard caches for compatibility
 	cachedAngle = lsystemParams.angle;
@@ -714,6 +759,12 @@ export function regenerate(): void {
 	cachedAngle = -1;
 	cached3DSegments = [];
 	cached3DAngle = -1;
+	// Also clear vertex buffer cache for fast path
+	cachedVertexData = null;
+	cachedVertexCount = 0;
+	cachedVertexInputKey = '';
+	cachedVertexIterations = -1;
+	cachedInputKey = '';
 }
 
 /**
@@ -766,9 +817,113 @@ export function getSpectrumPresets(): ColorSpectrum[] {
 	return presetSpectrums;
 }
 
-// Re-export color types for use in components
+// ============ Opacity Curve Management ============
+
+/**
+ * Set the opacity curve
+ */
+export function setOpacityCurve(curve: CurvePoint[]): void {
+	visualState.opacityCurve = curve;
+}
+
+/**
+ * Toggle opacity curve usage
+ */
+export function setUseOpacityCurve(useOpacityCurve: boolean): void {
+	visualState.useOpacityCurve = useOpacityCurve;
+}
+
+/**
+ * Sample the opacity curve at a given position (0-1)
+ * Uses linear interpolation between points
+ */
+export function sampleOpacityCurve(t: number): number {
+	const curve = visualState.opacityCurve;
+	if (!curve || curve.length === 0) return 1;
+	if (curve.length === 1) return curve[0].y;
+	
+	// Sort by x position
+	const sorted = [...curve].sort((a, b) => a.x - b.x);
+	
+	// Clamp t to [0, 1]
+	const clampedT = Math.max(0, Math.min(1, t));
+	
+	// Find surrounding points
+	let i = 0;
+	while (i < sorted.length - 1 && sorted[i + 1].x < clampedT) {
+		i++;
+	}
+	
+	// Handle edge cases
+	if (i >= sorted.length - 1) return sorted[sorted.length - 1].y;
+	if (clampedT <= sorted[0].x) return sorted[0].y;
+	
+	// Linear interpolation
+	const p0 = sorted[i];
+	const p1 = sorted[i + 1];
+	const localT = (clampedT - p0.x) / (p1.x - p0.x);
+	return p0.y + localT * (p1.y - p0.y);
+}
+
+// Re-export types for use in components
 export type { ColorSpectrum } from '../color/spectrum';
 export { presetSpectrums } from '../color/presets';
+export type { CurvePoint };
+
+// ============ Parameter Discovery ============
+
+/** Cached discovered parameters */
+let cachedDiscoveredParams: DiscoveredParam[] = [];
+let cachedDiscoveryGrammarStr = '';
+
+/**
+ * Get discovered parameters for current grammar
+ * Re-discovers when grammar changes
+ */
+export function getDiscoveredParameters(): DiscoveredParam[] {
+	const grammar = getCurrentGrammarPure();
+	if (!grammar) return [];
+	
+	const grammarStr = serializeGrammar(grammar);
+	
+	// Check cache
+	if (grammarStr === cachedDiscoveryGrammarStr) {
+		return cachedDiscoveredParams;
+	}
+	
+	// Re-discover
+	cachedDiscoveredParams = discoverParameters(grammar);
+	cachedDiscoveryGrammarStr = grammarStr;
+	
+	return cachedDiscoveredParams;
+}
+
+/**
+ * Update a discovered parameter value
+ * Modifies the grammar text and triggers re-derivation
+ */
+export function updateDiscoveredParameter(param: DiscoveredParam, newValue: number): void {
+	const { axiom, rules } = updateParameterInGrammar(
+		lsystemParams.axiom,
+		lsystemParams.rules,
+		param,
+		newValue
+	);
+	
+	lsystemParams.axiom = axiom;
+	lsystemParams.rules = rules;
+	
+	// Update the param's current value
+	param.currentValue = newValue;
+	
+	// Clear cache to force re-derivation
+	cachedGrammarStr = '';
+	cachedIterations = -1;
+	cachedDiscoveryGrammarStr = '';
+}
+
+// Re-export parameter types
+export type { DiscoveredParam } from '../params/discovery';
 
 // ============ GPU Integration ============
 

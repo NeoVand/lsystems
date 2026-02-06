@@ -229,6 +229,20 @@
 			fov: Math.PI / 4,
 		};
 	}
+
+	// Export canvas as PNG
+	function exportPNG() {
+		if (!canvas) return;
+		
+		// Create a temporary link and trigger download
+		const link = document.createElement('a');
+		link.download = `lsystem-3d-${Date.now()}.png`;
+		link.href = canvas.toDataURL('image/png');
+		link.click();
+	}
+
+	// Expose export function
+	export { exportPNG };
 </script>
 
 <div class="relative h-full w-full overflow-hidden bg-neutral-950">
@@ -261,9 +275,9 @@
 		</div>
 	{/if}
 
-	<!-- 3D Controls -->
+	<!-- 3D Controls (positioned above bottom bar) -->
 	{#if isInitialized}
-		<div class="absolute bottom-4 right-4 flex items-center gap-2">
+		<div class="absolute bottom-20 right-4 flex items-center gap-2">
 			<div class="flex items-center rounded-lg bg-neutral-800/90 backdrop-blur overflow-hidden">
 				<button
 					onclick={() => (camera.distance = Math.min(20, camera.distance * 1.25))}

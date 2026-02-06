@@ -67,7 +67,10 @@ export function derive(symbols: Symbol[], rules: D0LRule[], parametricRules: Par
 				let matched = false;
 				
 				// Filter rules that match param count and condition
-				const matchingRules: ParametricRule[] = [];
+				// Separate conditional and unconditional rules
+				const conditionalMatches: ParametricRule[] = [];
+				const unconditionalMatches: ParametricRule[] = [];
+				
 				for (const rule of paramRules) {
 					if (rule.params.length !== symbol.params.length) continue;
 					
@@ -81,13 +84,21 @@ export function derive(symbols: Symbol[], rules: D0LRule[], parametricRules: Par
 						try {
 							const condResult = evaluateExpression(rule.condition, vars);
 							if (!condResult) continue;
+							// Condition matched
+							conditionalMatches.push(rule);
 						} catch {
 							continue;
 						}
+					} else {
+						// No condition - this is a fallback rule
+						unconditionalMatches.push(rule);
 					}
-					
-					matchingRules.push(rule);
 				}
+				
+				// Prefer conditional matches over unconditional fallbacks
+				const matchingRules = conditionalMatches.length > 0 
+					? conditionalMatches 
+					: unconditionalMatches;
 				
 				if (matchingRules.length > 0) {
 					// Select rule (stochastically if multiple)

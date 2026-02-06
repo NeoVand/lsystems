@@ -137,7 +137,21 @@ export class Renderer3D {
 			fragment: {
 				module: fragmentModule,
 				entryPoint: 'main',
-				targets: [{ format }],
+				targets: [{
+					format,
+					blend: {
+						color: {
+							srcFactor: 'src-alpha',
+							dstFactor: 'one-minus-src-alpha',
+							operation: 'add',
+						},
+						alpha: {
+							srcFactor: 'one',
+							dstFactor: 'one-minus-src-alpha',
+							operation: 'add',
+						},
+					},
+				}],
 			},
 			primitive: {
 				topology: 'line-list',

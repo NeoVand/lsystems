@@ -1,91 +1,66 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { untrack } from 'svelte';
 	import Canvas from '$lib/components/Canvas.svelte';
 	import Canvas3D from '$lib/components/Canvas3D.svelte';
-	import Editor from '$lib/components/Editor.svelte';
-	import Controls from '$lib/components/Controls.svelte';
-	import PresetSelector from '$lib/components/PresetSelector.svelte';
+	import IconToolbar from '$lib/components/IconToolbar.svelte';
+	import ControlPanel from '$lib/components/ControlPanel.svelte';
+	import BottomBar from '$lib/components/BottomBar.svelte';
+	import type { ToolbarCategory } from '$lib/components/IconToolbar.svelte';
 	import {
-		computeSegments,
-		computeSegments3D,
 		visualState,
 		engineState,
 		lsystemParams,
 		loadPreset,
 		regenerate,
-		setSpectrumPreset,
-		setUseSpectrum,
-		getSpectrumPresets,
 	} from '$lib/stores/lsystem.svelte';
 	import { plant1 } from '$lib/presets/examples';
 	import type { LineSegment } from '$lib/gpu/types';
 	import type { Segment3D } from '$lib/turtle/turtle-3d';
-	import type { ColorSpectrum } from '$lib/color/spectrum';
-	import { sampleSpectrum, rgbToHex, hexToRgb, createTwoColorSpectrum } from '$lib/color/spectrum';
 
+	// Canvas refs for export
+	let canvasRef: Canvas | null = $state(null);
+	let canvas3DRef: Canvas3D | null = $state(null);
+
+	// Note: Canvas and Canvas3D components handle their own rendering via computeVertexBuffer()
+	// These are only used as fallback/for legacy compatibility
 	let segments: LineSegment[] = $state([]);
 	let segments3D: Segment3D[] = $state([]);
-	let panelOpen = $state(true);
-	let activeTab: 'preset' | 'grammar' | 'params' | 'visual' = $state('preset');
 	
-	// Color spectrum state
-	let spectrumType: 'preset' | 'two-color' = $state('preset');
-	let twoColorStart = $state('#3d2817');
-	let twoColorEnd = $state('#c5e17a');
-
-	// Recompute segments when parameters or visual settings change
-	$effect(() => {
-		// Track these dependencies
-		void lsystemParams.axiom;
-		void lsystemParams.rules;
-		void lsystemParams.iterations;
-		void lsystemParams.angle;
-		void visualState.colorMode;
-		void visualState.hueOffset;
-		void visualState.saturation;
-		void visualState.lightness;
-		void visualState.lineColor;
-		void visualState.is3D;
-		void visualState.useSpectrum;
-		void visualState.spectrumPreset;
-		
-		// Use untrack to avoid tracking state updates
-		untrack(() => {
-			if (visualState.is3D) {
-				segments3D = computeSegments3D();
-			} else {
-				segments = computeSegments();
-			}
-		});
-	});
-
-	// Generate a preview gradient CSS for a spectrum
-	function getGradientCss(spectrum: ColorSpectrum): string {
-		const stops = spectrum.stops.map(stop => {
-			const hex = rgbToHex(stop.color);
-			return `${hex} ${stop.position * 100}%`;
-		});
-		return `linear-gradient(to right, ${stops.join(', ')})`;
-	}
-	
-	// Handle two-color spectrum change
-	function updateTwoColorSpectrum() {
-		const spectrum = createTwoColorSpectrum(
-			hexToRgb(twoColorStart),
-			hexToRgb(twoColorEnd),
-			'Custom Two-Color'
-		);
-		visualState.spectrum = spectrum;
-		visualState.spectrumPreset = 'custom';
-	}
+	// UI state
+	let activeCategory: ToolbarCategory | null = $state(null);
 
 	onMount(() => {
 		loadPreset(plant1);
 	});
 
-	function togglePanel() {
-		panelOpen = !panelOpen;
+	function handleCategorySelect(category: ToolbarCategory) {
+		// Toggle off if same category
+		if (activeCategory === category) {
+			activeCategory = null;
+		} else {
+			activeCategory = category;
+		}
+	}
+
+	function handleClosePanel() {
+		activeCategory = null;
+	}
+
+	function handleExportPNG() {
+		if (visualState.is3D) {
+			canvas3DRef?.exportPNG?.();
+		} else {
+			canvasRef?.exportPNG?.();
+		}
+	}
+
+	function handleExportSVG() {
+		if (visualState.is3D) {
+			// 3D SVG export not supported
+			alert('SVG export is only available in 2D mode');
+		} else {
+			canvasRef?.exportSVG?.();
+		}
 	}
 </script>
 
@@ -93,433 +68,343 @@
 	<title>L-System Lab</title>
 </svelte:head>
 
-<!-- Full-screen canvas (2D or 3D) - key forces clean WebGPU reinit on mode switch -->
-<div class="fixed inset-0 bg-neutral-950">
+<!-- Full-screen canvas (2D or 3D) -->
+<div class="canvas-container">
 	{#key visualState.is3D}
 		{#if visualState.is3D}
-			<Canvas3D segments={segments3D} backgroundColor={visualState.backgroundColor} />
+			<Canvas3D bind:this={canvas3DRef} segments={segments3D} backgroundColor={visualState.backgroundColor} />
 		{:else}
-			<Canvas {segments} backgroundColor={visualState.backgroundColor} />
+			<Canvas bind:this={canvasRef} {segments} backgroundColor={visualState.backgroundColor} />
 		{/if}
 	{/key}
 </div>
 
-<!-- Floating control panel -->
-<div
-	class="fixed left-4 top-4 z-10 flex flex-col transition-all duration-300"
-	class:translate-x-0={panelOpen}
-	class:-translate-x-[calc(100%-3rem)]={!panelOpen}
->
-	<!-- Panel header with collapse button -->
-	<div class="flex items-center gap-2 mb-2">
-		<button
-			onclick={togglePanel}
-			class="flex h-10 w-10 items-center justify-center rounded-lg bg-neutral-800/90 backdrop-blur text-neutral-300 hover:bg-neutral-700 hover:text-white transition-colors"
-			title={panelOpen ? 'Collapse panel' : 'Expand panel'}
-		>
-			<svg
-				class="h-5 w-5 transition-transform duration-300"
-				class:rotate-180={!panelOpen}
-				fill="none"
-				viewBox="0 0 24 24"
-				stroke="currentColor"
-			>
-				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
-			</svg>
-		</button>
-		
-		{#if panelOpen}
-			<div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-neutral-800/90 backdrop-blur">
-				<div class="flex h-6 w-6 items-center justify-center rounded bg-emerald-600">
-					<svg class="h-4 w-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-					</svg>
-				</div>
-				<span class="text-sm font-medium text-white">L-System Lab</span>
-			</div>
-			<button
-				onclick={() => { regenerate(); segments = computeSegments(); }}
-				class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-neutral-800/90 backdrop-blur text-neutral-300 hover:bg-neutral-700 hover:text-white transition-colors text-xs"
-				title="Regenerate (new random values for stochastic presets)"
-			>
-				<svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-				</svg>
-				Regenerate
-			</button>
-		{/if}
+<!-- Icon Toolbar (left side) with regenerate button -->
+<div class="toolbar-container">
+	<IconToolbar {activeCategory} onSelect={handleCategorySelect} />
+	<button
+		class="regenerate-btn"
+		onclick={() => regenerate()}
+		title="Regenerate (R)"
+	>
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+			<path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+		</svg>
+	</button>
+</div>
+
+<!-- Control Panel (next to toolbar when active) -->
+{#if activeCategory}
+	<div class="panel-container">
+		<ControlPanel category={activeCategory} onClose={handleClosePanel} />
 	</div>
+{/if}
 
-	<!-- Main panel content -->
-	{#if panelOpen}
-		<div class="w-80 rounded-xl bg-neutral-900/95 backdrop-blur-xl border border-neutral-700/50 shadow-2xl overflow-hidden">
-			<!-- Tab navigation -->
-			<div class="flex border-b border-neutral-700/50">
-				<button
-					onclick={() => (activeTab = 'preset')}
-					class="flex-1 px-3 py-3 text-xs font-medium transition-colors {activeTab === 'preset' ? 'text-emerald-400 bg-neutral-800/50' : 'text-neutral-400 hover:text-neutral-200'}"
-				>
-					Presets
-				</button>
-				<button
-					onclick={() => (activeTab = 'grammar')}
-					class="flex-1 px-3 py-3 text-xs font-medium transition-colors {activeTab === 'grammar' ? 'text-emerald-400 bg-neutral-800/50' : 'text-neutral-400 hover:text-neutral-200'}"
-				>
-					Grammar
-				</button>
-				<button
-					onclick={() => (activeTab = 'params')}
-					class="flex-1 px-3 py-3 text-xs font-medium transition-colors {activeTab === 'params' ? 'text-emerald-400 bg-neutral-800/50' : 'text-neutral-400 hover:text-neutral-200'}"
-				>
-					Params
-				</button>
-				<button
-					onclick={() => (activeTab = 'visual')}
-					class="flex-1 px-3 py-3 text-xs font-medium transition-colors {activeTab === 'visual' ? 'text-emerald-400 bg-neutral-800/50' : 'text-neutral-400 hover:text-neutral-200'}"
-				>
-					Visual
-				</button>
-			</div>
+<!-- Bottom Bar -->
+<div class="bottom-container">
+	<BottomBar onExportPNG={handleExportPNG} onExportSVG={handleExportSVG} />
+</div>
 
-			<!-- Tab content -->
-			<div class="p-4 max-h-[60vh] overflow-y-auto">
-				{#if activeTab === 'preset'}
-					<PresetSelector />
-					
-					<div class="mt-4 p-3 rounded-lg bg-neutral-800/50 text-xs text-neutral-400">
-						<p class="font-medium text-neutral-300 mb-1">Quick Start</p>
-						<p>Select a preset to load a classic L-system. Then adjust parameters to explore variations.</p>
-					</div>
-				{:else if activeTab === 'grammar'}
-					<Editor />
-					
-					<details class="mt-4 group">
-						<summary class="flex cursor-pointer items-center justify-between text-sm text-neutral-400 hover:text-neutral-200">
-							<span>Symbol Reference</span>
-							<svg class="h-4 w-4 transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-							</svg>
-						</summary>
-						<div class="mt-3 space-y-4 text-xs">
-							<!-- Drawing -->
-							<div>
-								<div class="text-neutral-400 font-medium mb-1">Drawing</div>
-								<div class="space-y-0.5 text-neutral-500">
-									<div><code class="text-emerald-400">F, G</code> - Move forward and draw</div>
-									<div><code class="text-emerald-400">f, g</code> - Move forward (no draw)</div>
-								</div>
-							</div>
-							
-							<!-- 2D Rotation -->
-							<div>
-								<div class="text-neutral-400 font-medium mb-1">2D Rotation (Yaw)</div>
-								<div class="space-y-0.5 text-neutral-500">
-									<div><code class="text-emerald-400">+</code> - Turn left by angle</div>
-									<div><code class="text-emerald-400">-</code> - Turn right by angle</div>
-									<div><code class="text-emerald-400">|</code> - Turn around (180°)</div>
-								</div>
-							</div>
-							
-							<!-- 3D Rotation -->
-							<div>
-								<div class="text-neutral-400 font-medium mb-1">3D Rotation</div>
-								<div class="space-y-0.5 text-neutral-500">
-									<div><code class="text-emerald-400">&</code> - Pitch down</div>
-									<div><code class="text-emerald-400">^</code> - Pitch up</div>
-									<div><code class="text-emerald-400">\</code> - Roll left</div>
-									<div><code class="text-emerald-400">/</code> - Roll right</div>
-								</div>
-							</div>
-							
-							<!-- Branching -->
-							<div>
-								<div class="text-neutral-400 font-medium mb-1">Branching</div>
-								<div class="space-y-0.5 text-neutral-500">
-									<div><code class="text-emerald-400">[</code> - Push state (start branch)</div>
-									<div><code class="text-emerald-400">]</code> - Pop state (end branch)</div>
-								</div>
-							</div>
-							
-							<!-- Parametric -->
-							<div>
-								<div class="text-neutral-400 font-medium mb-1">Parametric Syntax</div>
-								<div class="space-y-0.5 text-neutral-500">
-									<div><code class="text-emerald-400">A(x,y)</code> - Symbol with params</div>
-									<div><code class="text-emerald-400">A(x) : x&gt;1</code> - Conditional rule</div>
-									<div><code class="text-emerald-400">A(x) -&gt; B(x*0.7)</code> - Transform</div>
-								</div>
-							</div>
-							
-							<!-- Stochastic -->
-							<div>
-								<div class="text-neutral-400 font-medium mb-1">Stochastic</div>
-								<div class="space-y-0.5 text-neutral-500">
-									<div><code class="text-emerald-400">F -&gt; FF (0.5)</code> - 50% probability</div>
-								</div>
-							</div>
-						</div>
-					</details>
-				{:else if activeTab === 'params'}
-					<Controls />
-				{:else if activeTab === 'visual'}
-					<!-- Color Mode -->
-					<div class="space-y-4">
-						<div>
-							<label class="block text-sm font-medium text-neutral-300 mb-2">Color Mode</label>
-							<div class="grid grid-cols-2 gap-2">
-								{#each ['depth', 'branch', 'age', 'position', 'uniform'] as mode}
-									<button
-										onclick={() => (visualState.colorMode = mode as typeof visualState.colorMode)}
-										class="px-3 py-2 text-xs rounded-lg transition-colors {visualState.colorMode === mode ? 'bg-emerald-600 text-white' : 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700'}"
-									>
-										{mode.charAt(0).toUpperCase() + mode.slice(1)}
-									</button>
-								{/each}
-							</div>
-						</div>
-
-						<!-- Color Spectrum (not shown for uniform mode) -->
-						{#if visualState.colorMode !== 'uniform'}
-							<!-- Spectrum/HSL Toggle -->
-							<div>
-								<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
-									<span>Coloring Method</span>
-								</label>
-								<div class="grid grid-cols-2 gap-2">
-									<button
-										onclick={() => setUseSpectrum(true)}
-										class="px-3 py-2 text-xs rounded-lg transition-colors {visualState.useSpectrum ? 'bg-emerald-600 text-white' : 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700'}"
-									>
-										Spectrum
-									</button>
-									<button
-										onclick={() => setUseSpectrum(false)}
-										class="px-3 py-2 text-xs rounded-lg transition-colors {!visualState.useSpectrum ? 'bg-emerald-600 text-white' : 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700'}"
-									>
-										HSL
-									</button>
-								</div>
-							</div>
-
-							{#if visualState.useSpectrum}
-								<!-- Spectrum Type -->
-								<div>
-									<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
-										<span>Spectrum Type</span>
-									</label>
-									<div class="grid grid-cols-2 gap-2">
-										<button
-											onclick={() => { spectrumType = 'preset'; }}
-											class="px-3 py-2 text-xs rounded-lg transition-colors {spectrumType === 'preset' ? 'bg-emerald-600 text-white' : 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700'}"
-										>
-											Presets
-										</button>
-										<button
-											onclick={() => { spectrumType = 'two-color'; updateTwoColorSpectrum(); }}
-											class="px-3 py-2 text-xs rounded-lg transition-colors {spectrumType === 'two-color' ? 'bg-emerald-600 text-white' : 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700'}"
-										>
-											Two-Color
-										</button>
-									</div>
-								</div>
-
-								{#if spectrumType === 'preset'}
-									<!-- Preset Grid -->
-									<div>
-										<label class="block text-sm text-neutral-400 mb-2">Color Palette</label>
-										<div class="grid grid-cols-3 gap-2">
-											{#each getSpectrumPresets() as preset}
-												<button
-													onclick={() => setSpectrumPreset(preset.name || '')}
-													class="group relative h-10 rounded-lg overflow-hidden border-2 transition-all {visualState.spectrumPreset === preset.name ? 'border-emerald-500 ring-1 ring-emerald-500' : 'border-transparent hover:border-neutral-600'}"
-													title={preset.name}
-												>
-													<div
-														class="absolute inset-0"
-														style="background: {getGradientCss(preset)}"
-													></div>
-													<div class="absolute inset-x-0 bottom-0 bg-black/60 text-[9px] text-neutral-300 py-0.5 text-center truncate opacity-0 group-hover:opacity-100 transition-opacity">
-														{preset.name}
-													</div>
-												</button>
-											{/each}
-										</div>
-									</div>
-								{:else}
-									<!-- Two Color Pickers -->
-									<div>
-										<label class="block text-sm text-neutral-400 mb-2">Start & End Colors</label>
-										<div class="flex items-center gap-3">
-											<input
-												type="color"
-												bind:value={twoColorStart}
-												onchange={updateTwoColorSpectrum}
-												class="w-12 h-10 rounded cursor-pointer bg-transparent border border-neutral-700"
-											/>
-											<div class="flex-1 h-6 rounded" style="background: linear-gradient(to right, {twoColorStart}, {twoColorEnd})"></div>
-											<input
-												type="color"
-												bind:value={twoColorEnd}
-												onchange={updateTwoColorSpectrum}
-												class="w-12 h-10 rounded cursor-pointer bg-transparent border border-neutral-700"
-											/>
-										</div>
-									</div>
-								{/if}
-
-								<!-- Current Spectrum Preview -->
-								<div>
-									<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
-										<span>Active Spectrum</span>
-										<span class="text-neutral-500 text-xs">{visualState.spectrumPreset}</span>
-									</label>
-									<div
-										class="h-4 rounded-lg border border-neutral-700"
-										style="background: {getGradientCss(visualState.spectrum)}"
-									></div>
-								</div>
-							{:else}
-								<!-- Legacy HSL Controls -->
-								<!-- Hue Offset -->
-								<div>
-									<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
-										<span>Hue Shift</span>
-										<span class="text-neutral-500">{visualState.hueOffset}°</span>
-									</label>
-									<input
-										type="range"
-										min="0"
-										max="360"
-										step="1"
-										bind:value={visualState.hueOffset}
-										class="w-full h-2 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-									/>
-								</div>
-
-								<!-- Saturation -->
-								<div>
-									<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
-										<span>Saturation</span>
-										<span class="text-neutral-500">{Math.round(visualState.saturation * 100)}%</span>
-									</label>
-									<input
-										type="range"
-										min="0"
-										max="1"
-										step="0.05"
-										bind:value={visualState.saturation}
-										class="w-full h-2 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-									/>
-								</div>
-
-								<!-- Lightness -->
-								<div>
-									<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
-										<span>Lightness</span>
-										<span class="text-neutral-500">{Math.round(visualState.lightness * 100)}%</span>
-									</label>
-									<input
-										type="range"
-										min="0.1"
-										max="0.9"
-										step="0.05"
-										bind:value={visualState.lightness}
-										class="w-full h-2 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-									/>
-								</div>
-							{/if}
-						{/if}
-
-						<!-- Uniform Color (only shown when uniform mode) -->
-						{#if visualState.colorMode === 'uniform'}
-							<div>
-								<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
-									<span>Line Color</span>
-									<input
-										type="color"
-										bind:value={visualState.lineColor}
-										class="w-8 h-8 rounded cursor-pointer bg-transparent"
-									/>
-								</label>
-							</div>
-						{/if}
-
-						<!-- Background Color -->
-						<div>
-							<label class="flex items-center justify-between text-sm text-neutral-400 mb-2">
-								<span>Background</span>
-								<input
-									type="color"
-									bind:value={visualState.backgroundColor}
-									class="w-8 h-8 rounded cursor-pointer bg-transparent"
-								/>
-							</label>
-						</div>
-					</div>
-				{/if}
-			</div>
-
-			<!-- Stats footer -->
-			<div class="px-4 py-3 border-t border-neutral-700/50 bg-neutral-800/30">
-				<div class="flex flex-col gap-1.5 text-xs">
-					<div class="flex items-center justify-between">
-						<div class="flex items-center gap-4">
-							<span class="text-neutral-500">
-								Symbols: <span class="text-neutral-300 tabular-nums">{engineState.symbolCount.toLocaleString()}</span>
-							</span>
-							<span class="text-neutral-500">
-								Lines: <span class="text-neutral-300 tabular-nums">{engineState.segmentCount.toLocaleString()}</span>
-							</span>
-						</div>
-						{#if engineState.isComputing}
-							<div class="flex items-center gap-1 text-amber-400">
-								<svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24">
-									<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" />
-									<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-								</svg>
-								<span>Computing</span>
-							</div>
-						{/if}
-					</div>
-					<div class="flex items-center justify-between text-neutral-500">
-						<div class="flex items-center gap-3">
-							<span>
-								Derive: <span class="text-neutral-400 tabular-nums">{engineState.lastDerivationTime.toFixed(0)}ms</span>
-							</span>
-							<span>
-								Turtle: <span class="text-neutral-400 tabular-nums">{engineState.lastInterpretTime.toFixed(0)}ms</span>
-							</span>
-						</div>
-						<span class="flex items-center gap-1.5">
-							{#if engineState.gpuAvailable}
-								<span class="flex h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
-								<span class="text-emerald-400/80">GPU Render</span>
-							{:else}
-								<span class="flex h-1.5 w-1.5 rounded-full bg-neutral-600"></span>
-								<span>No WebGPU</span>
-							{/if}
-						</span>
-					</div>
-				</div>
-			</div>
+<!-- Stats overlay (top-left, next to toolbar) -->
+<div class="stats-overlay">
+	<div class="stat">
+		<span class="stat-label">Symbols</span>
+		<span class="stat-value">{engineState.symbolCount.toLocaleString()}</span>
+	</div>
+	<div class="stat">
+		<span class="stat-label">Lines</span>
+		<span class="stat-value">{engineState.segmentCount.toLocaleString()}</span>
+	</div>
+	{#if engineState.isComputing}
+		<div class="computing-indicator">
+			<svg class="spinner" viewBox="0 0 24 24">
+				<circle class="spinner-track" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" />
+				<path class="spinner-head" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+			</svg>
 		</div>
 	{/if}
 </div>
 
-<!-- Keyboard shortcut hint -->
-<div class="fixed bottom-4 left-1/2 -translate-x-1/2 z-10 text-xs text-neutral-600 pointer-events-none">
-	<kbd class="px-1.5 py-0.5 rounded bg-neutral-800/80 text-neutral-400">Space</kbd> toggle panel
-	<span class="mx-2">•</span>
-	<kbd class="px-1.5 py-0.5 rounded bg-neutral-800/80 text-neutral-400">Scroll</kbd> zoom
-	<span class="mx-2">•</span>
-	<kbd class="px-1.5 py-0.5 rounded bg-neutral-800/80 text-neutral-400">Drag</kbd> pan
+<!-- Keyboard shortcut hints (shown only on desktop) -->
+<div class="keyboard-hints">
+	<span class="hint"><kbd>1-6</kbd> Categories</span>
+	<span class="hint"><kbd>R</kbd> Regenerate</span>
+	<span class="hint"><kbd>↑↓</kbd> Iterations</span>
+	<span class="hint"><kbd>Esc</kbd> Close</span>
 </div>
 
+<!-- Keyboard shortcuts -->
 <svelte:window
 	onkeydown={(e) => {
-		if (e.code === 'Space' && e.target === document.body) {
+		// Ignore if typing in input
+		if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+			return;
+		}
+
+		// Close panel with Escape
+		if (e.code === 'Escape' && activeCategory) {
 			e.preventDefault();
-			togglePanel();
+			activeCategory = null;
+			return;
+		}
+
+		// Category shortcuts (1-6)
+		const categories: ToolbarCategory[] = ['plants', 'fractals', 'patterns', 'structures', 'colors', 'settings'];
+		if (e.key >= '1' && e.key <= '6') {
+			e.preventDefault();
+			const idx = parseInt(e.key) - 1;
+			activeCategory = activeCategory === categories[idx] ? null : categories[idx];
+			return;
+		}
+
+		// Regenerate with R
+		if (e.code === 'KeyR' && !e.metaKey && !e.ctrlKey) {
+			e.preventDefault();
+			regenerate();
+			return;
+		}
+
+		// Iterations with arrow keys
+		if (e.code === 'ArrowUp' && !e.metaKey && !e.ctrlKey) {
+			e.preventDefault();
+			const max = 12; // Reasonable safe max
+			if (lsystemParams.iterations < max) {
+				lsystemParams.iterations++;
+			}
+			return;
+		}
+		if (e.code === 'ArrowDown' && !e.metaKey && !e.ctrlKey) {
+			e.preventDefault();
+			if (lsystemParams.iterations > 1) {
+				lsystemParams.iterations--;
+			}
+			return;
+		}
+
+		// 2D/3D toggle with Space
+		if (e.code === 'Space' && !e.metaKey && !e.ctrlKey) {
+			e.preventDefault();
+			visualState.is3D = !visualState.is3D;
+			return;
 		}
 	}}
 />
+
+<style>
+	/* Full-screen canvas */
+	.canvas-container {
+		position: fixed;
+		inset: 0;
+		background: rgb(10, 10, 15);
+	}
+
+	/* Icon Toolbar + Regenerate */
+	.toolbar-container {
+		position: fixed;
+		left: 16px;
+		top: 50%;
+		transform: translateY(-50%);
+		z-index: 20;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 8px;
+	}
+
+	/* Regenerate button (below toolbar) */
+	.regenerate-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 36px;
+		height: 36px;
+		padding: 0;
+		background: rgba(15, 15, 20, 0.85);
+		backdrop-filter: blur(12px);
+		-webkit-backdrop-filter: blur(12px);
+		border: 1px solid rgba(255, 255, 255, 0.08);
+		border-radius: 8px;
+		cursor: pointer;
+		color: rgba(255, 255, 255, 0.5);
+		transition: all 0.15s;
+	}
+
+	.regenerate-btn:hover {
+		background: rgba(16, 185, 129, 0.2);
+		border-color: rgba(16, 185, 129, 0.4);
+		color: rgb(16, 185, 129);
+	}
+
+	.regenerate-btn svg {
+		width: 18px;
+		height: 18px;
+	}
+
+	/* Control Panel */
+	.panel-container {
+		position: fixed;
+		left: 72px;
+		top: 50%;
+		transform: translateY(-50%);
+		z-index: 15;
+	}
+
+	/* Bottom Bar */
+	.bottom-container {
+		position: fixed;
+		bottom: 16px;
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 20;
+	}
+
+	/* Stats Overlay (top-left, away from 3D controls) */
+	.stats-overlay {
+		position: fixed;
+		top: 16px;
+		left: 72px;
+		display: flex;
+		align-items: center;
+		gap: 16px;
+		padding: 8px 14px;
+		background: rgba(15, 15, 20, 0.8);
+		backdrop-filter: blur(12px);
+		-webkit-backdrop-filter: blur(12px);
+		border: 1px solid rgba(255, 255, 255, 0.08);
+		border-radius: 8px;
+		z-index: 10;
+	}
+
+	.stat {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 2px;
+	}
+
+	.stat-label {
+		font-size: 9px;
+		font-weight: 500;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		color: rgba(255, 255, 255, 0.4);
+	}
+
+	.stat-value {
+		font-size: 13px;
+		font-family: ui-monospace, monospace;
+		font-weight: 600;
+		color: rgba(255, 255, 255, 0.8);
+	}
+
+	.computing-indicator {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.spinner {
+		width: 18px;
+		height: 18px;
+		color: rgb(16, 185, 129);
+	}
+
+	.spinner-track {
+		opacity: 0.2;
+	}
+
+	.spinner-head {
+		animation: spin 1s linear infinite;
+	}
+
+	@keyframes spin {
+		from {
+			transform: rotate(0deg);
+			transform-origin: 12px 12px;
+		}
+		to {
+			transform: rotate(360deg);
+			transform-origin: 12px 12px;
+		}
+	}
+
+	/* Keyboard hints (positioned above bottom bar) */
+	.keyboard-hints {
+		position: fixed;
+		bottom: 70px;
+		right: 16px;
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 6px 12px;
+		background: rgba(15, 15, 20, 0.6);
+		backdrop-filter: blur(8px);
+		-webkit-backdrop-filter: blur(8px);
+		border: 1px solid rgba(255, 255, 255, 0.06);
+		border-radius: 6px;
+		z-index: 5;
+		pointer-events: none;
+	}
+
+	.hint {
+		font-size: 10px;
+		color: rgba(255, 255, 255, 0.35);
+		display: flex;
+		align-items: center;
+		gap: 4px;
+	}
+
+	.hint kbd {
+		display: inline-block;
+		padding: 2px 5px;
+		font-family: ui-monospace, monospace;
+		font-size: 9px;
+		font-weight: 500;
+		background: rgba(255, 255, 255, 0.08);
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		border-radius: 3px;
+		color: rgba(255, 255, 255, 0.5);
+	}
+
+	/* Mobile adjustments */
+	@media (max-width: 640px) {
+		.toolbar-container {
+			left: 12px;
+			bottom: 80px;
+			top: auto;
+			transform: none;
+			flex-direction: row;
+		}
+
+		.panel-container {
+			left: 12px;
+			bottom: 140px;
+			top: auto;
+			transform: none;
+		}
+
+		.bottom-container {
+			bottom: 12px;
+		}
+
+		.stats-overlay {
+			top: 12px;
+			left: 12px;
+			padding: 6px 10px;
+			gap: 12px;
+		}
+
+		/* Hide keyboard hints on mobile */
+		.keyboard-hints {
+			display: none;
+		}
+	}
+
+	/* Touch-friendly tap targets */
+	@media (pointer: coarse) {
+		.regenerate-btn {
+			width: 44px;
+			height: 44px;
+		}
+	}
+</style>
